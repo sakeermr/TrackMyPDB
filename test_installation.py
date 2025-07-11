@@ -6,69 +6,34 @@ Test script to verify TrackMyPDB installation
 
 import sys
 import importlib
+import pytest
 
+@pytest.mark.parametrize("module_name", [
+    "streamlit",
+    "pandas",
+    "numpy",
+    "requests",
+    "tqdm",
+    "matplotlib",
+    "seaborn",
+    "plotly",
+    "rdkit"
+])
 def test_import(module_name):
     """Test if a module can be imported"""
     try:
         importlib.import_module(module_name)
-        print(f"✅ {module_name} - OK")
-        return True
-    except ImportError as e:
-        print(f"❌ {module_name} - FAILED: {e}")
-        return False
+        assert True, f"{module_name} imported successfully"
+    except ImportError:
+        pytest.fail(f"Failed to import {module_name}")
 
-def main():
-    """Main testing function"""
-    print("🧬 TrackMyPDB Installation Test")
-    print("=" * 40)
-    
-    # Test core dependencies
-    modules = [
-        'streamlit',
-        'pandas',
-        'numpy',
-        'requests',
-        'tqdm',
-        'matplotlib',
-        'seaborn',
-        'plotly'
-    ]
-    
-    success_count = 0
-    
-    for module in modules:
-        if test_import(module):
-            success_count += 1
-    
-    print(f"\n📊 Results: {success_count}/{len(modules)} modules imported successfully")
-    
-    # Test RDKit separately (most likely to fail)
-    print("\n🧪 Testing RDKit (cheminformatics)...")
-    if test_import('rdkit'):
-        print("✅ RDKit is available")
-    else:
-        print("❌ RDKit not available")
-        print("   Install with: pip install rdkit-pypi")
-        print("   Or with conda: conda install -c conda-forge rdkit")
-    
-    # Test backend modules
-    print("\n🔧 Testing backend modules...")
-    sys.path.append('backend')
-    
+def test_backend_imports():
+    """Test backend module imports"""
     try:
         from backend.heteroatom_extractor import HeteroatomExtractor
-        print("✅ HeteroatomExtractor - OK")
+        from backend.similarity_analyzer import SimilarityAnalyzer
+        from backend.agent_core import TrackMyPDBAgent
+        from backend.nl_interface import NaturalLanguageInterface
+        assert True
     except ImportError as e:
-        print(f"❌ HeteroatomExtractor - FAILED: {e}")
-    
-    try:
-        from backend.similarity_analyzer import MolecularSimilarityAnalyzer
-        print("✅ MolecularSimilarityAnalyzer - OK")
-    except ImportError as e:
-        print(f"❌ MolecularSimilarityAnalyzer - FAILED: {e}")
-    
-    print("\n🎯 Installation test completed!")
-    print("If all tests passed, run: streamlit run streamlit_app.py")
-
-if __name__ == "__main__":
-    main() 
+        pytest.fail(f"Failed to import backend modules: {e}")

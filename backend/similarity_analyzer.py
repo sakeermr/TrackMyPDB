@@ -22,7 +22,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 
-class MolecularSimilarityAnalyzer:
+class SimilarityAnalyzer:
     """
     A comprehensive tool for molecular similarity analysis using Morgan fingerprints
     and Tanimoto similarity scoring - corrected algorithm from Colab notebook.
@@ -481,4 +481,4 @@ class MolecularSimilarityAnalyzer:
         if len(similarity_results) > 0:
             self.create_similarity_visualizations(similarity_results, target_smiles)
 
-        return display_df 
+        return display_df
