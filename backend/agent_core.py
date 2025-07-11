@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from enum import Enum
 import datetime
 from .heteroatom_extractor import HeteroatomExtractor
-from .similarity_analyzer import SimilarityAnalyzer
+try:
+    from .similarity_analyzer import MolecularSimilarityAnalyzer as SimilarityAnalyzer
+except ImportError:
+    from .similarity_analyzer_simple import MolecularSimilarityAnalyzer as SimilarityAnalyzer
 
 class AgentAction(Enum):
     EXTRACT_HETEROATOMS = "extract_heteroatoms"

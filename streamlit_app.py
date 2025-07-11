@@ -28,11 +28,9 @@ try:
     # Try to import the full RDKit version first
     try:
         from backend.similarity_analyzer import MolecularSimilarityAnalyzer
-        RDKIT_AVAILABLE = True
     except ImportError:
         # Fall back to simplified version
         from backend.similarity_analyzer_simple import MolecularSimilarityAnalyzer
-        RDKIT_AVAILABLE = False
         st.warning("⚠️ RDKit not available - using simplified molecular similarity")
 except ImportError as e:
     st.error(f"Error importing backend modules: {e}")
