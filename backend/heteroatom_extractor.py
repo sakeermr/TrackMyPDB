@@ -319,22 +319,35 @@ class HeteroatomExtractor:
                     
                 current_progress += 1
 
-        # Create comprehensive DataFrame
+        # Create comprehensive DataFrame with required columns
         df = pd.DataFrame(self.all_records)
         
-        # Display comprehensive analysis
-        st.success("Heteroatom extraction completed!")
-        st.write(f"**Total records:** {len(df)}")
-        st.write(f"**PDB structures processed:** {df['PDB_ID'].nunique()}")
-        st.write(f"**Total unique heteroatoms found:** {df['Heteroatom_Code'].nunique()}")
-        st.write(f"**Records with SMILES:** {len(df[df['SMILES'] != ''])}")
+        # Ensure all required columns exist
+        required_columns = [
+            'UniProt_ID', 'PDB_ID', 'Heteroatom_Code', 'SMILES', 
+            'Chemical_Name', 'Formula', 'Status', 'Chains', 
+            'Residue_Numbers', 'Atom_Count'
+        ]
         
-        if self.failed_pdbs:
-            st.warning(f"**Failed PDB downloads:** {len(self.failed_pdbs)}")
+        # Add any missing columns with empty values
+        for col in required_columns:
+            if col not in df.columns:
+                df[col] = ''
+        
+        # Display comprehensive analysis
+        if not df.empty:
+            st.success("Heteroatom extraction completed!")
+            st.write(f"**Total records:** {len(df)}")
+            st.write(f"**PDB structures processed:** {df['PDB_ID'].nunique()}")
+            st.write(f"**Total unique heteroatoms found:** {df['Heteroatom_Code'].nunique()}")
+            st.write(f"**Records with SMILES:** {len(df[df['SMILES'] != ''])}")
+            
+            if self.failed_pdbs:
+                st.warning(f"**Failed PDB downloads:** {len(self.failed_pdbs)}")
 
-        # Show status breakdown
-        st.subheader("Status Breakdown")
-        status_counts = df['Status'].value_counts()
-        st.write(status_counts)
+            # Show status breakdown
+            st.subheader("Status Breakdown")
+            status_counts = df['Status'].value_counts()
+            st.write(status_counts)
 
-        return df 
+        return df
