@@ -48,6 +48,50 @@ class TrackMyPDBAgent:
             raise ValueError(f"Invalid query type: {query.query_type}")
         return True
 
+    def execute_action(self, action_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a specific action with given parameters"""
+        if action_name == "extract_heteroatoms":
+            uniprot_ids = parameters.get("uniprot_ids", [])
+            results = self.heteroatom_extractor.extract_heteroatoms(uniprot_ids)
+            return {"results": results}
+        
+        elif action_name == "analyze_similarity":
+            smiles = parameters.get("smiles", "")
+            threshold = parameters.get("threshold", 0.7)
+            if hasattr(self, "last_heteroatom_results"):
+                results = self.similarity_analyzer.analyze_similarity(
+                    smiles,
+                    self.last_heteroatom_results,
+                    min_similarity=threshold
+                )
+                return {"results": results}
+            else:
+                return {"error": "Please run heteroatom extraction first"}
+        
+        elif action_name == "complete_pipeline":
+            uniprot_ids = parameters.get("uniprot_ids", [])
+            smiles = parameters.get("smiles", "")
+            threshold = parameters.get("threshold", 0.7)
+            
+            # First extract heteroatoms
+            heteroatom_results = self.heteroatom_extractor.extract_heteroatoms(uniprot_ids)
+            self.last_heteroatom_results = heteroatom_results
+            
+            # Then analyze similarity
+            similarity_results = self.similarity_analyzer.analyze_similarity(
+                smiles,
+                heteroatom_results,
+                min_similarity=threshold
+            )
+            
+            return {
+                "heteroatom_results": heteroatom_results,
+                "similarity_results": similarity_results
+            }
+        
+        else:
+            return {"error": f"Unknown action: {action_name}"}
+
     async def process_query(self, query: AgentQuery) -> Dict[str, Any]:
         """Process a query and return results"""
         self.validate_query(query)

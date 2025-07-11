@@ -85,7 +85,6 @@ def render_traditional_interface():
     """Render the traditional interface with AI enhancements"""
     st.subheader("Traditional Analysis Interface")
     
-    # Enhanced with AI suggestions
     analysis_type = st.selectbox(
         "Analysis Type",
         ["🔍 Heteroatom Extraction", "🧪 Similarity Analysis", "📊 Complete Pipeline"]
@@ -113,10 +112,15 @@ def render_traditional_interface():
                     st.error(f"Error: {results['error']}")
                 else:
                     st.success("✅ Analysis complete!")
+                    st.session_state.last_heteroatom_results = results["results"]
                     st.write(results["results"])
     
     elif analysis_type == "🧪 Similarity Analysis":
         st.subheader("Similarity Analysis")
+        
+        if not hasattr(st.session_state, 'last_heteroatom_results'):
+            st.warning("⚠️ Please run heteroatom extraction first")
+            return
         
         smiles_input = st.text_area(
             "SMILES String",
@@ -147,6 +151,52 @@ def render_traditional_interface():
                 else:
                     st.success("✅ Analysis complete!")
                     st.write(results["results"])
+    
+    else:  # Complete Pipeline
+        st.subheader("Complete Pipeline Analysis")
+        
+        uniprot_input = st.text_area(
+            "UniProt IDs (one per line or comma-separated)",
+            help="💡 AI Tip: Enter one or more UniProt IDs to analyze"
+        )
+        
+        smiles_input = st.text_area(
+            "SMILES String",
+            help="💡 AI Tip: Enter a SMILES string to find similar compounds"
+        )
+        
+        threshold = st.slider(
+            "Similarity Threshold",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.7,
+            help="💡 AI Tip: Higher values mean more similar compounds"
+        )
+        
+        if st.button("🚀 Run Complete Analysis"):
+            if uniprot_input and smiles_input:
+                uniprot_ids = [id.strip() for id in uniprot_input.replace(',', '\n').split('\n') if id.strip()]
+                
+                with st.spinner("🔄 Running complete analysis pipeline..."):
+                    results = st.session_state.agent.execute_action(
+                        "complete_pipeline",
+                        {
+                            "uniprot_ids": uniprot_ids,
+                            "smiles": smiles_input,
+                            "threshold": threshold
+                        }
+                    )
+                    
+                if "error" in results:
+                    st.error(f"Error: {results['error']}")
+                else:
+                    st.success("✅ Complete analysis finished!")
+                    
+                    st.subheader("📊 Heteroatom Results")
+                    st.write(results["heteroatom_results"])
+                    
+                    st.subheader("🧪 Similarity Results")
+                    st.write(results["similarity_results"])
 
 if __name__ == "__main__":
     main()
