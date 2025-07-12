@@ -10,14 +10,20 @@ Licensed under MIT License - Open Source Project
 import os
 import re
 import json
-from typing import Dict, Any
-import google.generativeai as genai
-from dotenv import load_dotenv
+from typing import Dict, Any, Optional
 import streamlit as st
 import asyncio
+import time
 
-# Load environment variables
-load_dotenv()
+# Try to import Google Generative AI
+try:
+    import google.generativeai as genai
+    GENAI_AVAILABLE = True
+except ImportError:
+    GENAI_AVAILABLE = False
+    st.warning("Google Generative AI not installed. Install with: pip install google-generativeai")
+
+from .config import Config
 
 class GeminiAgent:
     """
@@ -27,158 +33,271 @@ class GeminiAgent:
     
     def __init__(self):
         """Initialize the Gemini AI agent"""
-        # Try multiple environment variable names for flexibility
-        api_key = (
-            os.getenv('GEMINI_API_KEY') or 
-            os.getenv('GOOGLE_API_KEY')
-        )
+        self.model = None
+        self.api_key = None
+        self.is_initialized = False
         
-        # Try to get from config if available
+        if not GENAI_AVAILABLE:
+            st.error("❌ Google Generative AI library not available")
+            return
+        
+        # Get API key from config
+        self.api_key = Config.get_api_key()
+        
+        if not self.api_key:
+            st.error("❌ No Google AI Studio API key found")
+            return
+        
         try:
-            from .config import Config
-            if not api_key:
-                api_key = (
-                    getattr(Config, 'GEMINI_API_KEY', None) or
-                    getattr(Config, 'GOOGLE_API_KEY', None)
+            # Configure Gemini
+            genai.configure(api_key=self.api_key)
+            
+            # Initialize the model
+            self.model = genai.GenerativeModel(
+                model_name=Config.GEMINI_MODEL,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=Config.GEMINI_TEMPERATURE,
+                    max_output_tokens=Config.GEMINI_MAX_OUTPUT_TOKENS,
                 )
-        except ImportError:
-            # Config not available, continue with environment variables only
-            pass
-        
-        if not api_key:
-            raise ValueError("No Gemini API key found. Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
-        
-        genai.configure(api_key=api_key)
-        
-        # Get the Gemini model
-        try:
-            self.model = genai.GenerativeModel('gemini-pro')
+            )
+            
+            self.is_initialized = True
+            st.success("✅ Gemini AI initialized successfully")
+            
         except Exception as e:
-            # Fallback to gemini-flash if gemini-pro is not available
+            st.error(f"❌ Failed to initialize Gemini AI: {str(e)}")
+            # Try fallback model
             try:
-                self.model = genai.GenerativeModel('gemini-flash')
+                self.model = genai.GenerativeModel('gemini-pro')
+                self.is_initialized = True
+                st.warning("⚠️ Using fallback Gemini model")
             except Exception as e2:
-                raise ValueError(f"Failed to initialize Gemini model: {e2}")
+                st.error(f"❌ Fallback model also failed: {str(e2)}")
+
+    def is_available(self) -> bool:
+        """Check if Gemini AI is available and properly initialized"""
+        return GENAI_AVAILABLE and self.is_initialized and self.model is not None
+
+    async def generate_ai_response(self, prompt: str) -> str:
+        """Generate AI response with proper error handling"""
+        if not self.is_available():
+            return "AI not available. Using fallback analysis."
+        
+        try:
+            response = self.model.generate_content(prompt)
+            return response.text if response.text else "No response generated"
+        except Exception as e:
+            st.warning(f"AI generation error: {str(e)}")
+            return f"AI error: {str(e)}"
+
+    def generate_ai_response_sync(self, prompt: str) -> str:
+        """Synchronous wrapper for AI response generation"""
+        if not self.is_available():
+            return "AI not available. Using fallback analysis."
+        
+        try:
+            response = self.model.generate_content(prompt)
+            return response.text if response.text else "No response generated"
+        except Exception as e:
+            return f"AI error: {str(e)}"
 
     def process_query_sync(self, query: str) -> Dict[str, Any]:
-        """Synchronous wrapper for process_query"""
-        try:
-            # Create new event loop if none exists
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If loop is running, we need to use run_in_executor
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(asyncio.run, self.process_query(query))
-                        return future.result()
-                else:
-                    return loop.run_until_complete(self.process_query(query))
-            except RuntimeError:
-                # No event loop exists, create one
-                return asyncio.run(self.process_query(query))
-        except Exception as e:
-            # Fallback to simple parsing if Gemini fails
+        """Synchronous processing of natural language queries"""
+        if not self.is_available():
             return self._fallback_parse(query)
-
-    async def process_query(self, query: str) -> Dict[str, Any]:
-        """Process natural language query using Gemini"""
+        
         try:
             prompt = self._create_analysis_prompt(query)
-            response = await self._generate_response(prompt)
+            response = self.generate_ai_response_sync(prompt)
             return self._parse_gemini_response(response, query)
         except Exception as e:
-            # Fallback to simple parsing
+            st.warning(f"Query processing error: {str(e)}")
             return self._fallback_parse(query)
+
+    def _create_analysis_prompt(self, query: str) -> str:
+        """Create analysis prompt for Gemini"""
+        return f"""
+        You are a molecular biology AI assistant specializing in protein-drug interactions and structural analysis.
+        
+        Analyze this user query and determine the appropriate action:
+        Query: "{query}"
+        
+        Available actions:
+        1. extract_heteroatoms - Extract heteroatoms from protein structures
+        2. similarity_analysis - Perform molecular similarity analysis
+        3. combined_analysis - Both heteroatom extraction and similarity analysis
+        
+        Extract any relevant parameters like:
+        - UniProt IDs (format: P12345)
+        - SMILES structures 
+        - Similarity thresholds (0.0-1.0)
+        - PDB IDs
+        
+        Respond in JSON format:
+        {{
+            "action": "action_name",
+            "parameters": {{"key": "value"}},
+            "explanation": "brief explanation",
+            "confidence": 0.9
+        }}
+        """
+
+    def _parse_gemini_response(self, response: str, original_query: str) -> Dict[str, Any]:
+        """Parse Gemini response into structured format"""
+        try:
+            # Try to extract JSON from response
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group()
+                result = json.loads(json_str)
+                return result
+            else:
+                # If no JSON found, parse manually
+                return self._manual_parse_response(response, original_query)
+        except Exception as e:
+            return self._fallback_parse(original_query)
+
+    def _manual_parse_response(self, response: str, query: str) -> Dict[str, Any]:
+        """Manually parse AI response when JSON parsing fails"""
+        response_lower = response.lower()
+        
+        if "heteroatom" in response_lower:
+            action = "extract_heteroatoms"
+        elif "similarity" in response_lower:
+            action = "similarity_analysis"
+        else:
+            action = "combined_analysis"
+        
+        # Extract parameters from original query
+        uniprot_match = re.findall(r'\b[OPQ][0-9][A-Z0-9]{3}[0-9]\b|\b[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}\b', query.upper())
+        smiles_match = re.search(r'[A-Za-z0-9@+\-\[\]()=:#$.\/\\]{3,}', query)
+        
+        parameters = {}
+        if uniprot_match:
+            parameters["uniprot_ids"] = uniprot_match
+        if smiles_match:
+            parameters["target_smiles"] = smiles_match.group()
+        
+        return {
+            "action": action,
+            "parameters": parameters,
+            "explanation": f"Parsed from AI response: {action}",
+            "confidence": 0.8
+        }
     
     def _fallback_parse(self, query: str) -> Dict[str, Any]:
-        """Fallback parsing when Gemini is not available"""
+        """Fallback parsing when AI is not available"""
         query_lower = query.lower()
         
-        if "heteroatom" in query_lower or "extract" in query_lower:
-            # Extract protein names using simple regex
-            protein_match = re.search(r'\b([A-Z0-9]{3,6})\b', query.upper())
-            protein_name = protein_match.group(1) if protein_match else "1ABC"
-            
-            return {
-                "action": "extract_heteroatoms",
-                "parameters": {"protein_name": protein_name},
-                "explanation": f"Extracting heteroatoms from protein {protein_name}"
-            }
+        # Extract UniProt IDs
+        uniprot_match = re.findall(r'\b[OPQ][0-9][A-Z0-9]{3}[0-9]\b|\b[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2}\b', query.upper())
+        
+        # Extract SMILES-like patterns
+        smiles_patterns = [
+            r'SMILES[:\s]+([A-Za-z0-9@+\-\[\]()=:#$.\/\\]+)',
+            r'\b([A-Za-z0-9@+\-\[\]()=:#$.\/\\]{5,})\b'
+        ]
+        
+        smiles = None
+        for pattern in smiles_patterns:
+            match = re.search(pattern, query)
+            if match:
+                candidate = match.group(1) if len(match.groups()) > 0 else match.group(0)
+                if any(char in candidate for char in ['C', 'N', 'O', '=', '(', ')', '[', ']']):
+                    smiles = candidate
+                    break
+        
+        # Determine action based on content
+        if "heteroatom" in query_lower and smiles:
+            action = "combined_analysis"
+        elif "heteroatom" in query_lower or "extract" in query_lower:
+            action = "extract_heteroatoms"
         elif "similarity" in query_lower or "compare" in query_lower:
-            return {
-                "action": "similarity_analysis", 
-                "parameters": {"threshold": 0.8},
-                "explanation": "Performing similarity analysis with default threshold"
-            }
+            action = "similarity_analysis"
         else:
-            return {
-                "action": "extract_heteroatoms",
-                "parameters": {"protein_name": "1ABC"},
-                "explanation": "Default action: extracting heteroatoms"
-            }
+            action = "extract_heteroatoms"  # Default
+        
+        parameters = {}
+        if uniprot_match:
+            parameters["uniprot_ids"] = uniprot_match
+        if smiles:
+            parameters["target_smiles"] = smiles
+        
+        return {
+            "action": action,
+            "parameters": parameters,
+            "explanation": f"Fallback parsing detected {action}",
+            "confidence": 0.6
+        }
 
     def get_scientific_explanation(self, results: Dict[str, Any]) -> str:
-        """
-        Get a scientific explanation of analysis results
+        """Get scientific explanation of analysis results"""
+        if not self.is_available():
+            return "AI explanation not available. Results processed successfully."
         
-        Args:
-            results (dict): Analysis results
-            
-        Returns:
-            str: Scientific explanation of the results
-        """
         try:
-            # Format results for the prompt
-            result_summary = str(results)[:1000]  # Truncate to avoid token limits
+            # Prepare results summary
+            result_summary = self._prepare_results_summary(results)
             
             prompt = f"""
-            Analyze these protein-ligand analysis results and provide a brief scientific explanation:
+            As a molecular biology expert, provide a concise scientific explanation of these protein-ligand analysis results:
+            
             {result_summary}
             
             Focus on:
-            1. Key findings and patterns
+            1. Key molecular findings and patterns
             2. Potential biological significance
-            3. Suggestions for further investigation
+            3. Structural insights
+            4. Recommendations for further study
             
-            Keep the explanation concise and scientific.
+            Keep the explanation scientific but accessible, around 3-4 sentences.
             """
             
-            response = self.model.generate_content(prompt)
-            return response.text
+            return self.generate_ai_response_sync(prompt)
             
         except Exception as e:
-            return f"Unable to generate scientific explanation: {e}"
+            return f"Scientific explanation generation failed: {str(e)}"
+
+    def _prepare_results_summary(self, results: Dict[str, Any]) -> str:
+        """Prepare a concise summary of results for AI analysis"""
+        summary_parts = []
+        
+        if isinstance(results, dict):
+            for key, value in results.items():
+                if key in ['total_heteroatoms', 'unique_pdbs', 'similarity_matches']:
+                    summary_parts.append(f"{key}: {value}")
+                elif key == 'top_similarities' and isinstance(value, list):
+                    summary_parts.append(f"Top similarity scores: {value[:3]}")
+        
+        return "; ".join(summary_parts) if summary_parts else str(results)[:500]
 
     def should_continue_iteration(self, current_results: Dict[str, Any]) -> bool:
-        """
-        Determine if analysis iteration should continue
+        """Determine if analysis iteration should continue"""
+        if not self.is_available():
+            return False  # Conservative fallback
         
-        Args:
-            current_results (dict): Current analysis results
-            
-        Returns:
-            bool: Whether to continue iteration
-        """
         try:
-            # Analyze current results
-            result_summary = str(current_results)[:1000]
+            result_summary = self._prepare_results_summary(current_results)
             
             prompt = f"""
-            Analyze these protein analysis results and determine if further iteration would be beneficial:
+            Analyze these molecular analysis results and determine if further iteration would provide significant additional insights:
+            
             {result_summary}
             
             Consider:
-            1. Convergence of results
-            2. Quality of findings
-            3. Potential for new insights
+            1. Convergence and completeness of current results
+            2. Quality and diversity of findings
+            3. Potential for discovering new patterns
             
-            Respond with just 'true' or 'false'.
+            Respond with only 'true' or 'false'.
             """
             
-            response = self.model.generate_content(prompt)
-            return response.text.strip().lower() == 'true'
+            response = self.generate_ai_response_sync(prompt)
+            return response.strip().lower() == 'true'
             
         except Exception as e:
-            st.warning(f"Error in iteration analysis: {e}")
-            return False
+            return False  # Conservative fallback
+
+    def validate_setup(self) -> tuple[bool, str]:
+        """Validate the Gemini setup"""
+        return Config.validate_ai_setup()

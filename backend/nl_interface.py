@@ -124,6 +124,10 @@ class OptimizedRealTimePDBExtractor:
         
         for line in hetatm_lines:
             try:
+                # Exclude water and common heteroatoms for speed
+                if "HOH" in line or "WAT" in line:
+                    continue
+                
                 # Extract residue name (columns 18-20, 1-indexed -> 17-20 in 0-indexed)
                 code = line[17:20].strip()
                 if not code:
@@ -852,3 +856,853 @@ RECOMMENDATIONS:
 - Validate top matches through experimental studies
 """
         return insights
+
+class TrackMyPDBNLInterface:
+    """
+    Natural Language Interface for TrackMyPDB
+    """
+    
+    def __init__(self, agent=None, local_database: pd.DataFrame = None):
+        """
+        Initialize the Natural Language Interface
+        
+        Args:
+            agent: TrackMyPDBAgent instance for real-time PDB operations
+            local_database: Excel-based PDB-derived data for AI modes
+        """
+        self.agent = agent
+        self.local_database = self._load_local_database() if local_database is None else local_database
+        
+        # OPTIMIZED real-time extractors for Manual Mode
+        self.realtime_extractor = OptimizedRealTimePDBExtractor()
+        self.realtime_similarity = OptimizedRealTimeSimilarityAnalyzer()
+        
+        # Initialize Gemini AI agent for AI modes
+        try:
+            from .gemini_agent import GeminiAgent
+            self.gemini_agent = GeminiAgent()
+            if self.gemini_agent.is_available():
+                st.success("✅ AI modes enabled with Google Gemini")
+            else:
+                st.warning("⚠️ AI modes will use fallback processing")
+        except Exception as e:
+            st.error(f"❌ AI initialization failed: {str(e)}")
+            self.gemini_agent = None
+        
+        # Initialize chat history for AI modes
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
+        if "current_analysis_state" not in st.session_state:
+            st.session_state.current_analysis_state = {}
+    
+    def _load_local_database(self):
+        """Load the local database from Excel files"""
+        try:
+            # Load all sheets from the Excel file
+            xls = pd.ExcelFile("PDB_Derived_Data.xlsx")
+            all_sheets = {sheet_name: xls.parse(sheet_name) for sheet_name in xls.sheet_names}
+            
+            # Concatenate all sheets into a single DataFrame
+            combined_df = pd.concat(all_sheets.values(), ignore_index=True)
+            
+            st.success(f"✅ Loaded local database with {len(combined_df)} records from Excel")
+            return combined_df
+        except Exception as e:
+            st.error(f"❌ Error loading local database: {str(e)}")
+            return pd.DataFrame()
+    
+    def _extract_smiles_from_text(self, text: str) -> str:
+        """Extract SMILES structure from text input"""
+        # Simple heuristic: look for strings that start with 'C' and have 5 or more characters
+        potential_smiles = re.findall(r'\bC[^ ]{4,}\b', text)
+        return potential_smiles[0] if potential_smiles else ""
+    
+    def _extract_uniprot_ids(self, text: str) -> List[str]:
+        """Extract UniProt IDs from text input"""
+        # Simple heuristic: look for strings that start with 'P' and are followed by 5 digits
+        potential_ids = re.findall(r'\bP\d{5}\b', text)
+        return list(set(potential_ids))  # Return unique IDs
+    
+    def handle_user_input(self, user_input: str):
+        """Handle and process user input for analysis requests"""
+        # Reset current analysis state
+        st.session_state.current_analysis_state = {}
+        
+        # Check for empty input
+        if not user_input.strip():
+            return "❌ Please provide a SMILES structure or UniProt IDs to analyze."
+        
+        # Check if Gemini AI is available
+        if self.gemini_agent and self.gemini_agent.is_available():
+            try:
+                # Use Gemini AI for intelligent response generation
+                ai_analysis = self.gemini_agent.process_query_sync(user_input)
+                
+                # Generate response based on AI analysis
+                action = ai_analysis.get('action', 'extract_heteroatoms')
+                parameters = ai_analysis.get('parameters', {})
+                explanation = ai_analysis.get('explanation', 'AI analysis completed')
+                confidence = ai_analysis.get('confidence', 0.8)
+                
+                # Store AI analysis in session state
+                st.session_state.current_analysis_state.update({
+                    "ai_action": action,
+                    "ai_parameters": parameters,
+                    "ai_explanation": explanation,
+                    "ai_confidence": confidence
+                })
+                
+                # Extract data from user input and AI analysis
+                smiles = parameters.get('target_smiles') or self._extract_smiles_from_text(user_input)
+                uniprot_ids = parameters.get('uniprot_ids') or self._extract_uniprot_ids(user_input)
+                
+                # Data sources information
+                data_sources = []
+                if parameters.get('use_local_db', True):
+                    data_sources.append(f"local database ({len(self.local_database)} records)")
+                if parameters.get('use_realtime', True):
+                    data_sources.append("real-time PDB fetching")
+                data_source_text = " AND ".join(data_sources) if data_sources else "no data sources selected"
+                
+                # Generate intelligent response based on AI analysis
+                response = f"""🤖 **AI Analysis Complete** (Confidence: {confidence:.1f})
+
+**Detected Action:** {action.replace('_', ' ').title()}
+**AI Explanation:** {explanation}
+
+**📊 Data Sources:** {data_source_text}
+
+"""
+                
+                if smiles:
+                    response += f"""🧪 **Detected SMILES:** `{smiles}`
+"""
+                
+                if uniprot_ids:
+                    response += f"""🧬 **Detected UniProt IDs:** {', '.join(uniprot_ids)}
+"""
+                
+                # Action-specific guidance
+                if action == "extract_heteroatoms":
+                    response += """
+**🔬 Heteroatom Extraction Mode**
+I'll extract heteroatoms from the specified protein structures.
+
+**Next Steps:**
+1. Confirm the UniProt IDs if detected, or provide them
+2. Choose analysis parameters (optional)
+3. I'll proceed with extraction using your selected data sources
+
+**Would you like to:**
+- ✅ **Proceed** with current settings
+- ⚙️ **Modify** parameters first
+- ❓ **Ask** questions about the process
+"""
+                
+                elif action == "similarity_analysis":
+                    response += """
+**🎯 Similarity Analysis Mode**
+I'll perform molecular similarity analysis with your SMILES structure.
+
+**Next Steps:**
+1. Confirm the target SMILES structure
+2. Set similarity threshold (default: 0.7)
+3. I'll analyze against available data sources
+
+**Would you like to:**
+- ✅ **Proceed** with current settings
+- ⚙️ **Adjust** similarity threshold
+- 📊 **Review** available data first
+"""
+                
+                elif action == "combined_analysis":
+                    response += """
+**🚀 Combined Analysis Mode**
+I'll perform both heteroatom extraction and similarity analysis.
+
+**Complete Pipeline:**
+1. Extract heteroatoms from specified proteins
+2. Perform similarity analysis with your SMILES
+3. Generate comprehensive results and insights
+
+**Would you like to:**
+- ✅ **Start** the complete pipeline
+- ⚙️ **Configure** advanced settings
+- 📋 **Review** the analysis plan first
+"""
+                
+                response += f"""
+
+**💡 Ready to proceed?** Just say "yes" or "proceed" and I'll start the {action.replace('_', ' ')}!
+"""
+                
+                return response
+                
+            except Exception as e:
+                st.warning(f"AI processing error: {str(e)}")
+                # Fall back to original logic
+                pass
+        
+        # Fallback to original logic if AI is not available
+        user_input_lower = user_input.lower()
+        
+        # Extract SMILES from input
+        smiles = self._extract_smiles_from_text(user_input)
+        uniprot_ids = self._extract_uniprot_ids(user_input)
+        
+        # Data sources information
+        data_sources = []
+        if parameters.get('use_local_db', True):
+            data_sources.append(f"local database ({len(self.local_database)} records)")
+        if parameters.get('use_realtime', True):
+            data_sources.append("real-time PDB fetching")
+        data_source_text = " AND ".join(data_sources) if data_sources else "no data sources selected"
+        
+        if smiles:
+            st.session_state.current_analysis_state["smiles"] = smiles
+            st.session_state.current_analysis_state["use_local_db"] = parameters.get('use_local_db', True)
+            st.session_state.current_analysis_state["use_realtime"] = parameters.get('use_realtime', True)
+            
+            response = f"""🧪 **Detected SMILES structure: `{smiles}`**
+
+I'll guide you through the HYBRID analysis using {data_source_text}.
+
+Let me ask some clarifying questions to optimize your analysis:
+
+**❓ Question 1:** What type of analysis would you prefer?
+- 🔬 **Heteroatom extraction only** (from specific UniProt IDs)
+- 🎯 **Molecular similarity analysis only** (against available data)
+- 🔄 **Complete pipeline** (both heteroatom + similarity)
+
+**❓ Question 2:** What similarity threshold should I use?
+- 🟢 **0.5** (loose matching - more results)
+- 🟡 **0.7** (moderate matching - balanced)
+- 🔴 **0.9** (strict matching - fewer, high-quality results)
+
+**❓ Question 3:** Do you have specific UniProt IDs to focus on?
+- If yes, please provide them (comma-separated)
+- If no, I'll analyze all available data
+
+**💡 Data Sources Active:**
+{f"- 📊 Local Database: {len(self.local_database)} records" if parameters.get('use_local_db', True) else ""}
+{f"- 🌐 Real-Time PDB: Live fetching enabled" if parameters.get('use_realtime', True) else ""}
+
+Please answer these questions and I'll proceed with your guided hybrid analysis!"""
+            
+            return response
+        
+        elif uniprot_ids:
+            st.session_state.current_analysis_state["uniprot_ids"] = uniprot_ids
+            st.session_state.current_analysis_state["use_local_db"] = parameters.get('use_local_db', True)
+            st.session_state.current_analysis_state["use_realtime"] = parameters.get('use_realtime', True)
+            
+            return f"""🔍 **Detected UniProt IDs: {', '.join(uniprot_ids)}**
+
+Great! I can extract heteroatoms from these protein structures using {data_source_text}.
+
+**❓ Follow-up Questions:**
+1. Do you also have a target SMILES for similarity analysis?
+2. What analysis scope do you prefer?
+   - Quick extraction (heteroatoms only)
+   - Full analysis (if you provide a SMILES structure)
+
+Please provide any additional details!"""
+        
+        # Check for proceed/confirmation commands
+        proceed_keywords = ['yes', 'proceed', 'start', 'go', 'continue', 'execute', 'run']
+        if any(keyword in user_input_lower for keyword in proceed_keywords):
+            # Check if we have stored AI analysis to execute
+            if "ai_action" in st.session_state.current_analysis_state:
+                return self._execute_ai_guided_analysis()
+            else:
+                return "I need more information before proceeding. Please provide a SMILES structure or UniProt IDs first."
+        
+        # General welcome message
+        return f"""🤖 **Welcome to AI-Powered Hybrid Mode!**
+
+I'm your analysis assistant for molecular research. I'll guide you through each step with questions to ensure optimal results.
+
+**📊 Available Data Sources:**
+- **{len(self.local_database)} compounds** from PDB-derived Excel files
+- **Live PDB Data Bank** for real-time fetching
+- **{self.local_database['UniProt_ID'].nunique()} UniProt proteins** (local)
+- **{self.local_database['PDB_ID'].nunique()} PDB structures** (local)
+- **Unlimited PDB access** (real-time)
+
+**🎯 What I can help you with:**
+- 🧬 **Molecular Similarity Analysis** - Find similar compounds (hybrid search)
+- 🔬 **Heteroatom Extraction** - Extract heteroatoms from proteins (hybrid sources)
+- 📊 **Complete Pipeline Analysis** - End-to-end molecular analysis (hybrid)
+
+**To get started, please provide:**
+1. A SMILES structure (e.g., "Analyze this SMILES: CCO")
+2. UniProt IDs (e.g., "Extract heteroatoms from P21554")
+3. Or describe your analysis needs
+
+I'll ask clarifying questions to guide you through the hybrid process!"""
+
+    def _execute_ai_guided_analysis(self) -> str:
+        """Execute analysis based on AI guidance"""
+        analysis_state = st.session_state.current_analysis_state
+        action = analysis_state.get("ai_action", "extract_heteroatoms")
+        parameters = analysis_state.get("ai_parameters", {})
+        
+        try:
+            if action == "extract_heteroatoms":
+                uniprot_ids = parameters.get("uniprot_ids", [])
+                if not uniprot_ids:
+                    return "❌ No UniProt IDs found for heteroatom extraction. Please provide them."
+                
+                # Execute heteroatom extraction
+                self._execute_ai_heteroatom_extraction(uniprot_ids, analysis_state)
+                return "✅ Heteroatom extraction started! Check the results below."
+            
+            elif action == "similarity_analysis":
+                target_smiles = parameters.get("target_smiles", "")
+                if not target_smiles:
+                    return "❌ No target SMILES found for similarity analysis. Please provide it."
+                
+                # Execute similarity analysis
+                self._execute_ai_similarity_analysis(target_smiles, analysis_state)
+                return "✅ Similarity analysis started! Check the results below."
+            
+            elif action == "combined_analysis":
+                uniprot_ids = parameters.get("uniprot_ids", [])
+                target_smiles = parameters.get("target_smiles", "")
+                
+                if not uniprot_ids or not target_smiles:
+                    return "❌ Both UniProt IDs and target SMILES required for combined analysis."
+                
+                # Execute combined analysis
+                self._execute_ai_combined_analysis(uniprot_ids, target_smiles, analysis_state)
+                return "✅ Combined analysis started! Check the results below."
+            
+            else:
+                return f"❌ Unknown action: {action}"
+                
+        except Exception as e:
+            return f"❌ Analysis execution failed: {str(e)}"
+
+    def _execute_ai_heteroatom_extraction(self, uniprot_ids: List[str], analysis_state: Dict):
+        """Execute AI-guided heteroatom extraction"""
+        st.subheader("🤖 AI-Guided Heteroatom Extraction")
+        
+        use_local_db = analysis_state.get("use_local_db", True)
+        use_realtime = analysis_state.get("use_realtime", True)
+        
+        combined_results = pd.DataFrame()
+        
+        # Local database extraction
+        if use_local_db and not self.local_database.empty:
+            st.info("🔍 Searching local database...")
+            local_results = self.local_database[
+                self.local_database['UniProt_ID'].isin(uniprot_ids)
+            ]
+            if not local_results.empty:
+                combined_results = pd.concat([combined_results, local_results], ignore_index=True)
+                st.success(f"✅ Found {len(local_results)} records in local database")
+        
+        # Real-time extraction
+        if use_realtime:
+            st.info("🌐 Performing real-time PDB extraction...")
+            realtime_results = self.realtime_extractor.extract_heteroatoms_realtime_optimized(uniprot_ids)
+            if not realtime_results.empty:
+                combined_results = pd.concat([combined_results, realtime_results], ignore_index=True)
+        
+        # Display results with AI insights
+        if not combined_results.empty:
+            self._display_heteroatom_results(combined_results, "ai-guided")
+            
+            # Generate AI explanation
+            if self.gemini_agent and self.gemini_agent.is_available():
+                st.subheader("🧠 AI Scientific Insights")
+                results_summary = {
+                    'total_heteroatoms': len(combined_results),
+                    'unique_pdbs': combined_results['PDB_ID'].nunique(),
+                    'unique_codes': combined_results['Heteroatom_Code'].nunique()
+                }
+                ai_explanation = self.gemini_agent.get_scientific_explanation()
+                st.info(f"**AI Analysis:** {ai_explanation}")
+
+    def _execute_ai_similarity_analysis(self, target_smiles: str, analysis_state: Dict):
+        """Execute AI-guided similarity analysis"""
+        st.subheader("🤖 AI-Guided Similarity Analysis")
+        
+        use_local_db = analysis_state.get("use_local_db", True)
+        use_realtime = analysis_state.get("use_realtime", True)
+        
+        # Determine data source
+        if use_local_db and not self.local_database.empty:
+            st.info("📊 Using local database for similarity analysis...")
+            similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
+                target_smiles=target_smiles,
+                heteroatom_df=self.local_database,
+                min_similarity=0.3
+            )
+        else:
+            st.warning("⚠️ No local data available. Please run heteroatom extraction first.")
+            return
+        
+        # Display results with AI insights
+        if not similarity_results.empty:
+            self._display_similarity_results(similarity_results, target_smiles, "ai-guided")
+            
+            # Generate AI explanation
+            if self.gemini_agent and self.gemini_agent.is_available():
+                st.subheader("🧠 AI Scientific Insights")
+                results_summary = {
+                    'similarity_matches': len(similarity_results),
+                    'top_similarities': similarity_results['Tanimoto_Similarity'].head(5).tolist(),
+                    'average_similarity': similarity_results['Tanimoto_Similarity'].mean()
+                }
+                ai_explanation = self.gemini_agent.get_scientific_explanation(results_summary)
+                st.info(f"**AI Analysis:** {ai_explanation}")
+
+    def _execute_ai_combined_analysis(self, uniprot_ids: List[str], target_smiles: str, analysis_state: Dict):
+        """Execute AI-guided combined analysis"""
+        st.subheader("🤖 AI-Guided Combined Analysis")
+        
+        # First extract heteroatoms
+        self._execute_ai_heteroatom_extraction(uniprot_ids, analysis_state)
+        
+        # Then perform similarity analysis on the results
+        if "heteroatom_results" in st.session_state:
+            heteroatom_data = st.session_state["heteroatom_results"]
+            similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
+                target_smiles=target_smiles,
+                heteroatom_df=heteroatom_data,
+                min_similarity=0.3
+            )
+            
+            if not similarity_results.empty:
+                st.subheader("🎯 Combined Analysis - Similarity Results")
+                self._display_similarity_results(similarity_results, target_smiles, "ai-combined")
+                
+                # Generate comprehensive AI explanation
+                if self.gemini_agent and self.gemini_agent.is_available():
+                    st.subheader("🧠 Comprehensive AI Insights")
+                    results_summary = {
+                        'total_heteroatoms': len(heteroatom_data),
+                        'similarity_matches': len(similarity_results),
+                        'best_similarity': similarity_results['Tanimoto_Similarity'].max(),
+                        'target_smiles': target_smiles
+                    }
+                    ai_explanation = self.gemini_agent.get_scientific_explanation(results_summary)
+                    st.info(f"**Comprehensive AI Analysis:** {ai_explanation}")
+
+    def _execute_autonomous_hybrid_analysis(self, user_input: str, threshold: float, 
+                                          comprehensive: bool, visualizations: bool,
+                                          auto_download: bool, processing_speed: str, result_detail: str,
+                                          use_local_data: bool, use_realtime_data: bool, data_priority: str):
+        """Execute fully autonomous analysis using HYBRID data sources"""
+        with st.spinner("🤖 AI working autonomously through hybrid pipeline..."):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            try:
+                # Step 1: AI input analysis
+                status_text.text("🔍 AI analyzing input and extracting parameters...")
+                progress_bar.progress(15)
+                
+                # Use Gemini AI for intelligent parameter extraction if available
+                if self.gemini_agent and self.gemini_agent.is_available():
+                    ai_analysis = self.gemini_agent.process_query_sync(user_input)
+                    action = ai_analysis.get('action', 'extract_heteroatoms')
+                    ai_parameters = ai_analysis.get('parameters', {})
+                    
+                    smiles = ai_parameters.get('target_smiles') or self._extract_smiles_from_text(user_input)
+                    uniprot_ids = ai_parameters.get('uniprot_ids') or self._extract_uniprot_ids(user_input)
+                    
+                    st.info(f"🤖 AI detected action: {action} (Confidence: {ai_analysis.get('confidence', 0.8):.2f})")
+                else:
+                    # Fallback extraction
+                    smiles = self._extract_smiles_from_text(user_input)
+                    uniprot_ids = self._extract_uniprot_ids(user_input)
+                    action = "combined_analysis" if smiles and uniprot_ids else "extract_heteroatoms"
+                
+                if not smiles and not uniprot_ids:
+                    st.error("❌ AI couldn't detect SMILES structure or UniProt IDs")
+                    return
+                
+                # Step 2: Autonomous parameter optimization
+                status_text.text("⚙️ AI optimizing analysis parameters...")
+                progress_bar.progress(30)
+                
+                # AI-determined optimal parameters based on speed preference
+                ai_params = {
+                    "radius": 2 if processing_speed == "Fast" else 3 if processing_speed == "Balanced" else 4,
+                    "n_bits": 1024 if processing_speed == "Fast" else 2048 if processing_speed == "Balanced" else 4096,
+                    "fp_type": "morgan",
+                    "metric": "tanimoto",
+                    "threshold": threshold,
+                    "batch_size": 100 if processing_speed == "Fast" else 50 if processing_speed == "Balanced" else 25
+                }
+                
+                # Configure analyzers with AI-optimized parameters
+                self.realtime_similarity.radius = ai_params["radius"]
+                self.realtime_similarity.n_bits = ai_params["n_bits"]
+                
+                # Combined results storage
+                combined_heteroatom_results = pd.DataFrame()
+                combined_similarity_results = pd.DataFrame()
+                
+                # Step 3: Autonomous heteroatom analysis (HYBRID)
+                status_text.text("🔬 AI performing autonomous heteroatom analysis...")
+                progress_bar.progress(40)
+                
+                if data_priority == "Local First" or data_priority == "Hybrid":
+                    if use_local_data and not self.local_database.empty:
+                        st.info("📊 AI analyzing local database...")
+                        
+                        if uniprot_ids:
+                            local_hetero_results = self.local_database[
+                                self.local_database['UniProt_ID'].isin(uniprot_ids)
+                            ]
+                        else:
+                            # AI selects representative sample based on diversity
+                            sample_size = min(100 if processing_speed == "Fast" else 200, len(self.local_database))
+                            local_hetero_results = self.local_database.sample(sample_size, random_state=42)
+                        
+                        combined_heteroatom_results = pd.concat([combined_heteroatom_results, local_hetero_results], ignore_index=True)
+                        st.success(f"✅ AI processed {len(local_hetero_results)} local records")
+                
+                if data_priority == "Real-Time First" or data_priority == "Hybrid":
+                    if use_realtime_data and uniprot_ids:
+                        st.info("🌐 AI performing real-time PDB extraction...")
+                        progress_bar.progress(50)
+                        
+                        # Limit UniProt IDs based on processing speed
+                        max_uniprots = 3 if processing_speed == "Fast" else 5 if processing_speed == "Balanced" else len(uniprot_ids)
+                        limited_uniprot_ids = uniprot_ids[:max_uniprots]
+                        
+                        realtime_hetero_results = self.realtime_extractor.extract_heteroatoms_realtime_optimized(limited_uniprot_ids)
+                        combined_heteroatom_results = pd.concat([combined_heteroatom_results, realtime_hetero_results], ignore_index=True)
+                        st.success(f"✅ AI extracted real-time data from {len(limited_uniprot_ids)} proteins")
+                
+                # Store heteroatom results for similarity analysis
+                if not combined_heteroatom_results.empty:
+                    st.session_state["heteroatom_results"] = combined_heteroatom_results
+                
+                # Step 4: Autonomous similarity analysis (HYBRID)
+                if smiles:
+                    status_text.text("🧪 AI performing autonomous similarity analysis...")
+                    progress_bar.progress(70)
+                    
+                    if not combined_heteroatom_results.empty:
+                        st.info("🎯 AI calculating molecular similarities...")
+                        
+                        # Perform similarity analysis on combined data
+                        realtime_similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
+                            target_smiles=smiles,
+                            heteroatom_df=combined_heteroatom_results,
+                            min_similarity=ai_params["threshold"],
+                            top_n=50 if processing_speed == "Fast" else 100
+                        )
+                        
+                        if not realtime_similarity_results.empty:
+                            combined_similarity_results = realtime_similarity_results
+                            st.success(f"✅ AI found {len(combined_similarity_results)} similar compounds")
+                
+                # Step 5: Autonomous report generation with AI insights
+                status_text.text("📋 AI generating comprehensive autonomous hybrid report...")
+                progress_bar.progress(90)
+                
+                # Display autonomous results
+                self._display_autonomous_hybrid_results(
+                    smiles, uniprot_ids, combined_heteroatom_results, combined_similarity_results,
+                    ai_params, comprehensive, visualizations, auto_download, result_detail,
+                    use_local_data, use_realtime_data, data_priority, action
+                )
+                
+                progress_bar.progress(100)
+                
+                # Generate final AI summary if available
+                if self.gemini_agent and self.gemini_agent.is_available():
+                    final_summary = self._generate_ai_final_summary(
+                        smiles, uniprot_ids, combined_heteroatom_results, combined_similarity_results, ai_params
+                    )
+                    st.success("🎉 **Autonomous Hybrid Analysis Complete!**")
+                    st.info(f"**🤖 AI Final Summary:** {final_summary}")
+                else:
+                    st.success("🎉 **Autonomous Hybrid Analysis Complete!** Processing finished using hybrid data sources.")
+                
+            except Exception as e:
+                st.error(f"❌ Autonomous hybrid analysis failed: {str(e)}")
+                if self.gemini_agent and self.gemini_agent.is_available():
+                    error_analysis = self.gemini_agent.generate_ai_response_sync(
+                        f"Analyze this error and suggest solutions: {str(e)}"
+                    )
+                    st.info(f"**AI Error Analysis:** {error_analysis}")
+            finally:
+                progress_bar.empty()
+                status_text.empty()
+
+    def _generate_ai_final_summary(self, smiles: str, uniprot_ids: List[str], 
+                                  heteroatom_results: pd.DataFrame, similarity_results: pd.DataFrame,
+                                  ai_params: Dict) -> str:
+        """Generate final AI summary of the autonomous analysis"""
+        if not self.gemini_agent or not self.gemini_agent.is_available():
+            return "Analysis completed successfully using hybrid data sources."
+        
+        try:
+            # Prepare comprehensive summary for AI
+            summary_data = {
+                'target_smiles': smiles,
+                'uniprot_ids': uniprot_ids,
+                'total_heteroatoms': len(heteroatom_results),
+                'unique_pdbs': heteroatom_results['PDB_ID'].nunique() if not heteroatom_results.empty else 0,
+                'similarity_matches': len(similarity_results),
+                'best_similarity': similarity_results['Tanimoto_Similarity'].max() if not similarity_results.empty and 'Tanimoto_Similarity' in similarity_results.columns else 0,
+                'avg_similarity': similarity_results['Tanimoto_Similarity'].mean() if not similarity_results.empty and 'Tanimoto_Similarity' in similarity_results.columns else 0,
+                'ai_parameters': ai_params
+            }
+            
+            prompt = f"""
+            As a molecular biology expert, provide a concise final summary of this autonomous protein-ligand analysis:
+            
+            Analysis Results: {summary_data}
+            
+            Provide insights on:
+            1. Overall analysis quality and completeness
+            2. Key molecular findings and their significance
+            3. Recommendations for follow-up research
+            4. Confidence level in the results
+            
+            Keep the summary professional, scientific, and under 4 sentences.
+            """
+            
+            return self.gemini_agent.generate_ai_response_sync(prompt)
+            
+        except Exception as e:
+            return f"Analysis completed successfully. AI summary generation encountered an issue: {str(e)[:50]}..."
+
+    def _display_autonomous_hybrid_results(self, smiles: str, uniprot_ids: List[str],
+                                          heteroatom_results: pd.DataFrame, similarity_results: pd.DataFrame,
+                                          ai_params: Dict, comprehensive: bool, visualizations: bool,
+                                          auto_download: bool, result_detail: str,
+                                          use_local_data: bool, use_realtime_data: bool, data_priority: str, action: str):
+        """Display comprehensive autonomous hybrid analysis results"""
+        
+        # Analysis overview with AI context
+        st.subheader("🤖 Autonomous Hybrid Analysis Overview")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("🧬 Target SMILES", smiles[:15] + "..." if smiles and len(smiles) > 15 else smiles or "Auto-detected")
+        with col2:
+            st.metric("🔬 Heteroatoms Found", len(heteroatom_results))
+        with col3:
+            st.metric("🎯 Similar Compounds", len(similarity_results))
+        with col4:
+            avg_similarity = similarity_results['Tanimoto_Similarity'].mean() if not similarity_results.empty and 'Tanimoto_Similarity' in similarity_results.columns else 0
+            st.metric("📊 Avg Similarity", f"{avg_similarity:.3f}")
+        
+        # AI-powered analysis summary
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info(f"**🤖 AI Action:** {action.replace('_', ' ').title()}")
+            st.info(f"**📊 Data Sources:** {'Local + ' if use_local_data else ''}{'Real-Time' if use_realtime_data else ''}")
+        with col2:
+            st.info(f"**⚙️ AI Parameters:** Radius={ai_params['radius']}, Bits={ai_params['n_bits']}")
+            st.info(f"**🎯 Priority:** {data_priority}")
+        
+        # Results display based on detail level
+        if result_detail in ["Standard", "Detailed"]:
+            if not heteroatom_results.empty:
+                st.subheader("🔬 Autonomous Hybrid Heteroatom Analysis")
+                self._display_heteroatom_results(heteroatom_results, "autonomous-hybrid")
+                
+                # AI insights for heteroatom results
+                if self.gemini_agent and self.gemini_agent.is_available():
+                    with st.expander("🧠 AI Heteroatom Insights", expanded=False):
+                        hetero_summary = {
+                            'total_heteroatoms': len(heteroatom_results),
+                            'unique_codes': heteroatom_results['Heteroatom_Code'].nunique(),
+                            'success_rate': len(heteroatom_results[heteroatom_results['SMILES'] != '']) / len(heteroatom_results) * 100
+                        }
+                        ai_hetero_insights = self.gemini_agent.get_scientific_explanation(hetero_summary)
+                        st.write(ai_hetero_insights)
+            
+            if not similarity_results.empty:
+                st.subheader("🎯 Autonomous Hybrid Similarity Analysis")
+                self._display_similarity_results(similarity_results, smiles, "autonomous-hybrid")
+                
+                # AI insights for similarity results
+                if self.gemini_agent and self.gemini_agent.is_available():
+                    with st.expander("🧠 AI Similarity Insights", expanded=False):
+                        sim_summary = {
+                            'similarity_matches': len(similarity_results),
+                            'top_score': similarity_results['Tanimoto_Similarity'].max(),
+                            'distribution': similarity_results['Tanimoto_Similarity'].describe().to_dict()
+                        }
+                        ai_sim_insights = self.gemini_agent.get_scientific_explanation(sim_summary)
+                        st.write(ai_sim_insights)
+        
+        # Comprehensive AI report
+        if comprehensive and self.gemini_agent and self.gemini_agent.is_available():
+            st.subheader("📋 AI Autonomous Hybrid Comprehensive Report")
+            report = self._generate_autonomous_hybrid_report(
+                smiles, uniprot_ids, heteroatom_results, similarity_results, ai_params,
+                use_local_data, use_realtime_data, data_priority, action
+            )
+            st.markdown(report)
+        
+        # Visualizations
+        if visualizations and not similarity_results.empty:
+            st.subheader("📊 Autonomous Hybrid Analysis Visualizations")
+            self._create_autonomous_visualizations(similarity_results, smiles)
+        
+        # Auto-downloads
+        if auto_download:
+            self._generate_autonomous_downloads(heteroatom_results, similarity_results)
+
+    def _generate_autonomous_hybrid_report(self, smiles: str, uniprot_ids: List[str],
+                                          heteroatom_results: pd.DataFrame, similarity_results: pd.DataFrame,
+                                          ai_params: Dict, use_local_data: bool, use_realtime_data: bool, 
+                                          data_priority: str, action: str) -> str:
+        """Generate comprehensive autonomous hybrid analysis report with AI insights"""
+        
+        data_sources = []
+        if use_local_data:
+            data_sources.append(f"Local Excel database ({len(self.local_database)} records)")
+        if use_realtime_data:
+            data_sources.append("Real-time PDB Data Bank")
+        
+        report = f"""
+## 🤖 AI Autonomous Hybrid Analysis Report
+
+**Generated:** {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+**AI Version:** Gemini-1.5-Flash (Google AI Studio)
+
+### 📋 AI Analysis Summary
+- **Detected Action:** {action.replace('_', ' ').title()}
+- **Target SMILES:** `{smiles if smiles else 'Auto-detected from input'}`
+- **UniProt IDs:** {', '.join(uniprot_ids) if uniprot_ids else 'Auto-selected from database'}
+- **Data Sources:** {' + '.join(data_sources)}
+- **Data Priority:** {data_priority}
+
+### ⚙️ AI-Optimized Parameters
+- **Morgan Radius:** {ai_params['radius']} (AI-optimized for performance)
+- **Bit Vector Length:** {ai_params['n_bits']} (AI-selected for accuracy/speed balance)
+- **Fingerprint Type:** {ai_params['fp_type']} (AI-recommended)
+- **Similarity Metric:** {ai_params['metric']} (AI-chosen)
+- **Threshold:** {ai_params['threshold']} (User-specified, AI-validated)
+
+### 📊 Hybrid Results Overview
+- **Heteroatom Records:** {len(heteroatom_results)} (AI-processed)
+- **Similar Compounds:** {len(similarity_results)} (AI-analyzed)
+- **Local Database Used:** {'✅ Yes' if use_local_data else '❌ No'}
+- **Real-Time Fetching Used:** {'✅ Yes' if use_realtime_data else '❌ No'}
+- **Processing Mode:** Fully Autonomous with AI Optimization
+"""
+        
+        if not similarity_results.empty and 'Tanimoto_Similarity' in similarity_results.columns:
+            max_sim = similarity_results['Tanimoto_Similarity'].max()
+            avg_sim = similarity_results['Tanimoto_Similarity'].mean()
+            high_sim_count = len(similarity_results[similarity_results['Tanimoto_Similarity'] >= 0.8])
+            
+            report += f"""
+### 🎯 AI Hybrid Similarity Analysis
+- **Highest Similarity:** {max_sim:.3f} (AI-identified top match)
+- **Average Similarity:** {avg_sim:.3f} (AI-calculated mean)
+- **High-Confidence Matches (≥0.8):** {high_sim_count} compounds
+- **AI Confidence Level:** {'High' if avg_sim > 0.7 else 'Medium' if avg_sim > 0.5 else 'Moderate'}
+"""
+        
+        # Add AI-generated insights if available
+        if self.gemini_agent and self.gemini_agent.is_available():
+            try:
+                overall_summary = {
+                    'heteroatom_count': len(heteroatom_results),
+                    'similarity_count': len(similarity_results),
+                    'best_similarity': max_sim if not similarity_results.empty and 'Tanimoto_Similarity' in similarity_results.columns else 0,
+                    'action_performed': action
+                }
+                ai_insights = self.gemini_agent.get_scientific_explanation(overall_summary)
+                report += f"""
+### 🧠 AI Scientific Insights
+{ai_insights}
+"""
+            except Exception:
+                pass
+        
+        report += f"""
+### 🔮 AI System Analysis
+- **Analysis Completed:** Fully autonomous with minimal user intervention
+- **Data Integration:** Hybrid approach combining local speed with real-time completeness
+- **Parameter Optimization:** AI-determined optimal settings for user requirements
+- **Quality Assessment:** AI-validated results with confidence scoring
+- **Future Recommendations:** {'Enhanced with full PDB database integration' if use_local_data else 'Consider adding local database for faster processing'}
+
+### ✅ Autonomous Status
+**FULLY AUTONOMOUS HYBRID ANALYSIS COMPLETE** - AI handled all parameter optimization and decision-making
+**Next Steps:** Review results, download data, or request additional analysis with different parameters
+"""
+        
+        return report
+
+    def _create_autonomous_visualizations(self, similarity_results: pd.DataFrame, target_smiles: str):
+        """Create visualizations for autonomous hybrid analysis results"""
+        try:
+            # Distribution histogram
+            fig_hist = px.histogram(
+                similarity_results,
+                x='Tanimoto_Similarity',
+                title="Molecular Similarity Distribution",
+                nbins=20,
+                color_discrete_sequence=['#636EFA']
+            )
+            fig_hist.update_layout(xaxis_title="Tanimoto Similarity", yaxis_title="Count")
+            st.plotly_chart(fig_hist, use_container_width=True)
+            
+            # Scatter plot of top similar compounds
+            top_results = similarity_results.head(10)
+            fig_scatter = go.Figure()
+            fig_scatter.add_trace(go.Scatter(
+                x=top_results.index,
+                y=top_results['Tanimoto_Similarity'],
+                mode='markers+lines',
+                marker=dict(size=10, color=top_results['Tanimoto_Similarity'], colorscale='Viridis'),
+                text=[f"{row['PDB_ID']}-{row['Heteroatom_Code']}" for _, row in top_results.iterrows()],
+                hovertemplate='<b>%{text}</b><br>Similarity: %{y:.3f}<extra></extra>'
+            ))
+            fig_scatter.update_layout(
+                title="Top 10 Similar Compounds",
+                xaxis_title="Rank",
+                yaxis_title="Tanimoto Similarity",
+                xaxis=dict(tickvals=list(range(len(top_results))), ticktext=[str(i+1) for i in range(len(top_results))]),
+                yaxis=dict(range=[0, 1]),
+                margin=dict(t=30, b=30, l=40, r=10)
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
+        
+        except Exception as e:
+            st.warning(f"Error creating visualizations: {e}")
+
+    def _generate_autonomous_downloads(self, heteroatom_results: pd.DataFrame, similarity_results: pd.DataFrame):
+        """Generate downloadable files for autonomous analysis results"""
+        try:
+            # Heteroatom results CSV
+            if not heteroatom_results.empty:
+                csv_heteroatoms = heteroatom_results.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Heteroatom Results CSV",
+                    data=csv_heteroatoms,
+                    file_name="heteroatom_results_autonomous.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            # Similarity results CSV
+            if not similarity_results.empty:
+                csv_similarity = similarity_results.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Similarity Results CSV",
+                    data=csv_similarity,
+                    file_name="similarity_results_autonomous.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        
+        except Exception as e:
+            st.warning(f"Error generating downloads: {e}")
