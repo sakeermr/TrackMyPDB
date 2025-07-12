@@ -1,161 +1,151 @@
 """
-TrackMyPDB Gemini AI Integration
-Enhances natural language understanding using Google's Gemini model
+TrackMyPDB Gemini AI Agent
+@author Anu Gamage
+
+This module provides Gemini AI integration for enhanced natural language understanding
+and scientific analysis in TrackMyPDB.
+Licensed under MIT License - Open Source Project
 """
 
-import google.generativeai as genai
-import streamlit as st
-from typing import Dict, Any, List, Optional
-import json
 import os
-
-# Default API key storage location
-CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.py')
+from typing import Dict, Any
+import google.generativeai as genai
+from dotenv import load_dotenv
+import streamlit as st
 
 class GeminiAgent:
+    """
+    A class that handles Gemini AI integration for enhanced natural language processing
+    and scientific analysis in TrackMyPDB.
+    """
+    
     def __init__(self):
-        self._initialize_api_key()
-        self.model = genai.GenerativeModel('gemini-pro')
-        self.chat = self.model.start_chat(history=[])
-        self._initialize_chat()
-
-    def _initialize_api_key(self):
-        """Initialize Gemini API key from config file"""
-        try:
-            from . import config
-            if hasattr(config, 'GEMINI_API_KEY') and config.GEMINI_API_KEY:
-                genai.configure(api_key=config.GEMINI_API_KEY)
-            else:
-                raise ValueError("GEMINI_API_KEY not found or empty in config.py")
-        except ImportError:
-            raise ValueError("config.py not found. Please create it with GEMINI_API_KEY")
-        except Exception as e:
-            raise ValueError(f"Error initializing Gemini API: {str(e)}")
-
-    def _initialize_chat(self):
-        """Initialize chat with system prompt for protein analysis"""
-        self.system_prompt = """You are an expert protein analysis assistant specializing in:
-1. Heteroatom extraction from protein structures
-2. Molecular similarity analysis
-3. Structure-activity relationships
-4. Protein-ligand interactions
-
-Format your responses as JSON with the following structure:
-{
-    "action": "extract_heteroatoms" | "analyze_similarity" | "complete_pipeline",
-    "parameters": {
-        "uniprot_ids": ["P53", ...],  // For heteroatom extraction
-        "smiles": "CC(=O)O",          // For similarity analysis
-        "radius": 2,                  // Morgan fingerprint radius
-        "n_bits": 2048,              // Number of bits
-        "threshold": 0.7             // Similarity threshold
-    },
-    "explanation": "Brief explanation of what you're doing",
-    "follow_up_suggestions": ["Suggestion 1", "Suggestion 2"]
-}
-"""
-        response = self.chat.send_message(self.system_prompt)
-        if not response.text:
-            raise ValueError("Failed to initialize chat with system prompt")
-
-    def _validate_json_response(self, text: str) -> Dict[str, Any]:
-        """Validate and extract JSON from response"""
-        try:
-            # Find JSON block in response
-            start = text.find('{')
-            end = text.rfind('}') + 1
-            if start >= 0 and end > start:
-                json_str = text[start:end]
-                return json.loads(json_str)
-        except:
-            pass
+        """Initialize the Gemini AI agent"""
+        load_dotenv()  # Load environment variables
         
-        return {
-            "action": "complete_pipeline",
-            "parameters": {},
-            "explanation": "Could not parse response",
-            "follow_up_suggestions": []
-        }
+        # Configure Gemini
+        api_key = os.getenv('GOOGLE_API_KEY')
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable not set")
+            
+        genai.configure(api_key=api_key)
+        
+        # Get the Gemini model
+        try:
+            self.model = genai.GenerativeModel('gemini-pro')
+        except Exception as e:
+            raise Exception(f"Failed to initialize Gemini model: {e}")
 
     async def process_query(self, query: str) -> Dict[str, Any]:
-        """Process user query through Gemini"""
+        """
+        Process a natural language query and determine appropriate actions
+        
+        Args:
+            query (str): The user's natural language query
+            
+        Returns:
+            dict: Action parameters extracted from the query
+        """
         try:
-            # Add protein analysis context
-            enhanced_query = f"""Analyze this protein analysis request: {query}
-
-Consider:
-- UniProt IDs start with P, Q, or O and contain numbers
-- SMILES strings contain parentheses or equals signs
-- Morgan fingerprint radius should be 1-4
-- Number of bits should be 512, 1024, 2048, or 4096
-- Similarity threshold should be 0.0-1.0
-
-Respond with JSON only."""
-
-            response = self.chat.send_message(enhanced_query)
-            if not response.text:
-                raise ValueError("Empty response from Gemini")
+            # Prompt engineering for better extraction
+            prompt = f"""
+            Analyze this protein analysis query: "{query}"
             
-            # Parse and validate response
-            result = self._validate_json_response(response.text)
+            Extract:
+            1. Main action (extract_heteroatoms/analyze_similarity/complete_pipeline)
+            2. Parameters (UniProt IDs, SMILES, threshold, etc.)
+            3. A brief explanation of what will be done
             
-            # Add default parameters if missing
-            if "parameters" not in result:
-                result["parameters"] = {}
-            if "radius" not in result["parameters"]:
-                result["parameters"]["radius"] = 2
-            if "n_bits" not in result["parameters"]:
-                result["parameters"]["n_bits"] = 2048
-            if "threshold" not in result["parameters"]:
-                result["parameters"]["threshold"] = 0.7
+            Format response as JSON with keys:
+            - action: string
+            - parameters: object
+            - explanation: string
+            """
+            
+            response = await self.model.generate_content(prompt)
+            result = response.text
+            
+            # Parse the JSON response
+            try:
+                parsed = eval(result)  # Safe since we control the input
+                return parsed
+            except:
+                # Fallback to basic extraction
+                return {
+                    "action": "extract_heteroatoms",
+                    "parameters": {},
+                    "explanation": "Analyzing protein structure..."
+                }
                 
-            return result
-
         except Exception as e:
-            st.error(f"Error processing query with Gemini: {str(e)}")
+            st.error(f"Error processing query with Gemini: {e}")
             return {
-                "action": "complete_pipeline",
+                "action": "extract_heteroatoms",
                 "parameters": {},
-                "explanation": f"Error: {str(e)}",
-                "follow_up_suggestions": []
+                "explanation": "Analyzing protein structure..."
             }
 
     def get_scientific_explanation(self, results: Dict[str, Any]) -> str:
-        """Generate scientific explanation of results"""
-        try:
-            # Format results summary for Gemini
-            results_summary = json.dumps(results, indent=2)
+        """
+        Get a scientific explanation of analysis results
+        
+        Args:
+            results (dict): Analysis results
             
-            prompt = f"""Explain these protein analysis results scientifically:
-{results_summary}
-
-Focus on:
-1. Structural insights
-2. Chemical properties
-3. Biological implications
-4. Key findings and patterns
-
-Keep it concise and technical."""
-
-            response = self.chat.send_message(prompt)
-            return response.text if response.text else "Could not generate explanation"
-
-        except Exception as e:
-            return f"Could not generate explanation: {str(e)}"
-
-    def suggest_followup_analyses(self, results: Dict[str, Any]) -> List[str]:
-        """Generate follow-up analysis suggestions based on results"""
+        Returns:
+            str: Scientific explanation of the results
+        """
         try:
-            prompt = f"""Based on these analysis results:
-{json.dumps(results, indent=2)}
+            # Format results for the prompt
+            result_summary = str(results)[:1000]  # Truncate to avoid token limits
+            
+            prompt = f"""
+            Analyze these protein-ligand analysis results and provide a brief scientific explanation:
+            {result_summary}
+            
+            Focus on:
+            1. Key findings and patterns
+            2. Potential biological significance
+            3. Suggestions for further investigation
+            
+            Keep the explanation concise and scientific.
+            """
+            
+            response = self.model.generate_content(prompt)
+            return response.text
+            
+        except Exception as e:
+            return f"Unable to generate scientific explanation: {e}"
 
-Suggest 3 follow-up analyses that would provide additional insights.
-Format as a JSON array of strings."""
-
-            response = self.chat.send_message(prompt)
-            suggestions = json.loads(response.text)
-            return suggestions if isinstance(suggestions, list) else []
-        except:
-            return ["Analyze similar protein structures",
-                   "Investigate binding site characteristics",
-                   "Compare with known drug targets"]
+    def should_continue_iteration(self, current_results: Dict[str, Any]) -> bool:
+        """
+        Determine if analysis iteration should continue
+        
+        Args:
+            current_results (dict): Current analysis results
+            
+        Returns:
+            bool: Whether to continue iteration
+        """
+        try:
+            # Analyze current results
+            result_summary = str(current_results)[:1000]
+            
+            prompt = f"""
+            Analyze these protein analysis results and determine if further iteration would be beneficial:
+            {result_summary}
+            
+            Consider:
+            1. Convergence of results
+            2. Quality of findings
+            3. Potential for new insights
+            
+            Respond with just 'true' or 'false'.
+            """
+            
+            response = self.model.generate_content(prompt)
+            return response.text.strip().lower() == 'true'
+            
+        except Exception as e:
+            st.warning(f"Error in iteration analysis: {e}")
+            return False

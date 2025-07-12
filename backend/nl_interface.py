@@ -43,6 +43,36 @@ class NaturalLanguageInterface:
         # Add to chat history
         if not hasattr(st.session_state, 'chat_history'):
             st.session_state.chat_history = []
+        
+        # Check if this is a continuation query
+        if user_input.lower().strip() in ["continue", "continue to iterate", "continue iteration"]:
+            if hasattr(st.session_state, 'last_results'):
+                should_continue = self.gemini.should_continue_iteration(st.session_state.last_results)
+                if should_continue:
+                    # Perform another iteration with previous parameters
+                    with st.spinner("🔄 Continuing analysis..."):
+                        response = self.agent.execute_action(
+                            action_name=st.session_state.last_action,
+                            parameters=st.session_state.last_parameters
+                        )
+                        st.session_state.last_results = response
+                        
+                        response_text = "✅ Iteration complete!\n\n"
+                        if self.gemini:
+                            explanation = self.gemini.get_scientific_explanation(response)
+                            response_text += f"🔬 Scientific Analysis of New Results:\n{explanation}"
+                else:
+                    response_text = "📊 Analysis has converged - no further iterations needed."
+                
+                st.session_state.chat_history.append({
+                    "type": "agent",
+                    "content": response_text,
+                    "timestamp": datetime.datetime.now().isoformat()
+                })
+                return
+            else:
+                st.warning("No previous analysis to continue from.")
+                return
             
         st.session_state.chat_history.append({
             "type": "user",
@@ -58,6 +88,10 @@ class NaturalLanguageInterface:
                 parameters = gemini_response["parameters"]
                 explanation = gemini_response["explanation"]
                 
+                # Store for potential continuation
+                st.session_state.last_action = action
+                st.session_state.last_parameters = parameters
+                
                 # Add Gemini's explanation to chat
                 st.session_state.chat_history.append({
                     "type": "agent",
@@ -69,6 +103,8 @@ class NaturalLanguageInterface:
             params = self._extract_parameters(user_input)
             action = params["action"]
             parameters = params["parameters"]
+            st.session_state.last_action = action
+            st.session_state.last_parameters = parameters
         
         # Process with agent
         with st.spinner("🔬 Processing analysis..."):
@@ -76,14 +112,18 @@ class NaturalLanguageInterface:
                 action_name=action,
                 parameters=parameters
             )
+            st.session_state.last_results = response
         
-        # Format response
+        # Format response and get scientific explanation
         response_text = self._format_response(response)
-        
-        # Get scientific explanation from Gemini if available
         if self.gemini and "error" not in response:
             explanation = self.gemini.get_scientific_explanation(response)
             response_text += f"\n\n🔬 Scientific Analysis:\n{explanation}"
+            
+            # Add iteration suggestion if appropriate
+            should_continue = self.gemini.should_continue_iteration(response)
+            if should_continue:
+                response_text += "\n\n💡 The analysis could benefit from another iteration. Type 'continue' to proceed."
         
         # Add agent response to chat history
         st.session_state.chat_history.append({
