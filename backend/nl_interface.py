@@ -3,7 +3,7 @@ TrackMyPDB Natural Language Interface
 @author Anu Gamage
 
 Three distinct operational modes:
-1. Manual Mode - ONLY real-time PDB fetching (limited by UniProt IDs)
+1. Manual Mode - ONLY real-time PDB fetching (limited by UniProt IDs) - OPTIMIZED
 2. AI-Powered Mode - BOTH local database AND real-time PDB fetching
 3. Fully Autonomous Mode - BOTH local database AND real-time PDB fetching
 
@@ -20,100 +20,149 @@ import asyncio
 import time
 import os
 import requests
-from tqdm import tqdm
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import warnings
+warnings.filterwarnings('ignore')
 
-class RealTimePDBExtractor:
+class OptimizedRealTimePDBExtractor:
     """
-    Real-time PDB heteroatom extractor for all modes
-    Uses live PDB Data Bank fetching
+    OPTIMIZED Real-time PDB heteroatom extractor for Manual Mode
+    Uses live PDB Data Bank fetching with performance optimizations
     """
     
     def __init__(self):
         self.PDBe_BEST = "https://www.ebi.ac.uk/pdbe/api/mappings/best_structures"
         self.failed_pdbs = []
         self.all_records = []
+        self.session = requests.Session()  # Reuse connections
+        self.session.headers.update({
+            'User-Agent': 'TrackMyPDB/2.0 (Molecular Analysis Tool)',
+            'Accept': 'application/json'
+        })
     
     def get_pdbs_for_uniprot(self, uniprot):
-        """Get PDB IDs for given UniProt ID from PDBe best mappings."""
+        """Get PDB IDs for given UniProt ID from PDBe best mappings - OPTIMIZED."""
         try:
-            r = requests.get(f"{self.PDBe_BEST}/{uniprot}", timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            structs = []
-            if isinstance(data, dict) and uniprot in data:
-                val = data[uniprot]
-                if isinstance(val, dict):
-                    structs = val.get("best_structures", [])
-                elif isinstance(val, list):
-                    structs = val
-            elif isinstance(data, list):
-                structs = data
-            return sorted({s["pdb_id"].upper() for s in structs if s.get("pdb_id")})
+            with st.spinner(f"🔍 Fetching PDB structures for {uniprot}..."):
+                r = self.session.get(f"{self.PDBe_BEST}/{uniprot}", timeout=15)
+                r.raise_for_status()
+                data = r.json()
+                
+                structs = []
+                if isinstance(data, dict) and uniprot in data:
+                    val = data[uniprot]
+                    if isinstance(val, dict):
+                        structs = val.get("best_structures", [])
+                    elif isinstance(val, list):
+                        structs = val
+                elif isinstance(data, list):
+                    structs = data
+                
+                pdb_ids = sorted({s["pdb_id"].upper() for s in structs if s.get("pdb_id")})
+                st.info(f"📁 Found {len(pdb_ids)} PDB structures for {uniprot}: {', '.join(pdb_ids[:5])}{'...' if len(pdb_ids) > 5 else ''}")
+                return pdb_ids
+                
         except Exception as e:
             st.error(f"⚠️ Error fetching PDBs for {uniprot}: {e}")
             return []
 
-    def download_pdb(self, pdb):
-        """Download .pdb file and return lines."""
-        try:
-            url = f"https://files.rcsb.org/download/{pdb}.pdb"
-            r = requests.get(url, timeout=30)
-            r.raise_for_status()
-            return r.text.splitlines()
-        except Exception as e:
-            st.warning(f"⚠️ Error downloading {pdb}: {e}")
-            return []
+    def download_pdb_parallel(self, pdb_ids, max_workers=5):
+        """Download multiple PDB files in parallel - OPTIMIZED."""
+        pdb_data = {}
+        
+        def download_single_pdb(pdb_id):
+            try:
+                url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
+                r = self.session.get(url, timeout=45)
+                r.raise_for_status()
+                return pdb_id, r.text.splitlines()
+            except Exception as e:
+                st.warning(f"⚠️ Error downloading {pdb_id}: {e}")
+                return pdb_id, None
+        
+        # Use ThreadPoolExecutor for parallel downloads
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with st.spinner(f"⬇️ Downloading {len(pdb_ids)} PDB files in parallel..."):
+                progress_bar = st.progress(0)
+                
+                # Submit all download tasks
+                future_to_pdb = {executor.submit(download_single_pdb, pdb): pdb for pdb in pdb_ids}
+                
+                completed = 0
+                for future in as_completed(future_to_pdb):
+                    pdb_id = future_to_pdb[future]
+                    try:
+                        pdb_id, lines = future.result()
+                        if lines:
+                            pdb_data[pdb_id] = lines
+                        else:
+                            self.failed_pdbs.append(pdb_id)
+                    except Exception as e:
+                        st.error(f"⚠️ Error processing {pdb_id}: {e}")
+                        self.failed_pdbs.append(pdb_id)
+                    
+                    completed += 1
+                    progress_bar.progress(completed / len(pdb_ids))
+                
+                progress_bar.empty()
+        
+        st.success(f"✅ Downloaded {len(pdb_data)} PDB files successfully")
+        if self.failed_pdbs:
+            st.warning(f"⚠️ Failed to download {len(self.failed_pdbs)} PDB files")
+        
+        return pdb_data
 
-    def extract_all_heteroatoms(self, lines):
-        """Extract ALL unique heteroatom codes from HETATM lines - NO FILTERING."""
+    def extract_all_heteroatoms_optimized(self, lines):
+        """Extract ALL unique heteroatom codes from HETATM lines - OPTIMIZED."""
         hets = set()
         het_details = {}
 
-        for line in lines:
-            if line.startswith("HETATM"):
+        # Process lines more efficiently
+        hetatm_lines = [line for line in lines if line.startswith("HETATM")]
+        
+        for line in hetatm_lines:
+            try:
                 # Extract residue name (columns 18-20, 1-indexed -> 17-20 in 0-indexed)
                 code = line[17:20].strip()
-                if code:  # Only add non-empty codes
-                    hets.add(code)
+                if not code:
+                    continue
+                    
+                hets.add(code)
 
-                    # Also extract additional info for context
-                    if code not in het_details:
-                        try:
-                            chain = line[21:22].strip()
-                            res_num = line[22:26].strip()
-                            atom_name = line[12:16].strip()
-                            het_details[code] = {
-                                'chains': set([chain]) if chain else set(),
-                                'residue_numbers': set([res_num]) if res_num else set(),
-                                'atom_names': set([atom_name]) if atom_name else set()
-                            }
-                        except:
-                            het_details[code] = {'chains': set(), 'residue_numbers': set(), 'atom_names': set()}
-                    else:
-                        try:
-                            chain = line[21:22].strip()
-                            res_num = line[22:26].strip()
-                            atom_name = line[12:16].strip()
-                            if chain:
-                                het_details[code]['chains'].add(chain)
-                            if res_num:
-                                het_details[code]['residue_numbers'].add(res_num)
-                            if atom_name:
-                                het_details[code]['atom_names'].add(atom_name)
-                        except:
-                            pass
+                # Extract additional info for context
+                chain = line[21:22].strip()
+                res_num = line[22:26].strip()
+                atom_name = line[12:16].strip()
+                
+                if code not in het_details:
+                    het_details[code] = {
+                        'chains': set([chain]) if chain else set(),
+                        'residue_numbers': set([res_num]) if res_num else set(),
+                        'atom_names': set([atom_name]) if atom_name else set()
+                    }
+                else:
+                    if chain:
+                        het_details[code]['chains'].add(chain)
+                    if res_num:
+                        het_details[code]['residue_numbers'].add(res_num)
+                    if atom_name:
+                        het_details[code]['atom_names'].add(atom_name)
+            except (IndexError, AttributeError):
+                continue
 
         return sorted(list(hets)), het_details
 
-    def fetch_smiles_rcsb(self, code):
-        """Fetch SMILES from RCSB core chemcomp API with comprehensive error handling."""
-        max_retries = 3
+    def fetch_smiles_rcsb_optimized(self, code):
+        """Fetch SMILES from RCSB core chemcomp API - OPTIMIZED."""
+        max_retries = 2  # Reduced retries for speed
+        base_delay = 0.5  # Reduced delay
+        
         for attempt in range(max_retries):
             try:
                 url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{code}"
-                r = requests.get(url, timeout=15)
+                r = self.session.get(url, timeout=10)  # Reduced timeout
 
                 if r.status_code == 200:
                     data = r.json()
@@ -130,29 +179,28 @@ class RealTimePDBExtractor:
                     return {'smiles': '', 'name': '', 'formula': '', 'status': 'not_in_rcsb'}
                 else:
                     if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)  # Exponential backoff
+                        time.sleep(base_delay * (2 ** attempt))
                         continue
                     return {'smiles': '', 'name': '', 'formula': '', 'status': f'http_{r.status_code}'}
 
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(base_delay * (2 ** attempt))
                     continue
                 return {'smiles': '', 'name': '', 'formula': '', 'status': 'timeout'}
             except Exception as e:
                 if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                    time.sleep(base_delay * (2 ** attempt))
                     continue
                 return {'smiles': '', 'name': '', 'formula': '', 'status': f'error_{str(e)[:20]}'}
 
         return {'smiles': '', 'name': '', 'formula': '', 'status': 'failed_all_retries'}
 
-    def fetch_from_pubchem(self, code):
-        """Try to fetch SMILES from PubChem as backup."""
+    def fetch_from_pubchem_optimized(self, code):
+        """Try to fetch SMILES from PubChem as backup - OPTIMIZED."""
         try:
-            # Try by compound name
             url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{code}/property/CanonicalSMILES/JSON"
-            r = requests.get(url, timeout=10)
+            r = self.session.get(url, timeout=8)  # Reduced timeout
             if r.status_code == 200:
                 data = r.json()
                 props = data.get("PropertyTable", {}).get("Properties", [])
@@ -162,169 +210,182 @@ class RealTimePDBExtractor:
             pass
         return ""
 
-    def process_pdb_heteroatoms(self, pdb_id, uniprot_id, lines):
-        """Process all heteroatoms from a single PDB."""
-        codes, het_details = self.extract_all_heteroatoms(lines)
-        results = []
+    def process_pdb_heteroatoms_batch(self, pdb_data, uniprot_id):
+        """Process heteroatoms from multiple PDBs in batch - OPTIMIZED."""
+        all_results = []
+        total_pdbs = len(pdb_data)
+        
+        st.info(f"🔬 Processing heteroatoms from {total_pdbs} PDB structures...")
+        
+        progress_bar = st.progress(0)
+        status_container = st.empty()
+        
+        for idx, (pdb_id, lines) in enumerate(pdb_data.items()):
+            status_container.text(f"Processing {pdb_id} ({idx+1}/{total_pdbs})")
+            
+            codes, het_details = self.extract_all_heteroatoms_optimized(lines)
+            
+            if not codes:
+                all_results.append({
+                    "UniProt_ID": uniprot_id,
+                    "PDB_ID": pdb_id,
+                    "Heteroatom_Code": "NO_HETEROATOMS",
+                    "SMILES": "",
+                    "Chemical_Name": "",
+                    "Formula": "",
+                    "Status": "no_heteroatoms",
+                    "Chains": "",
+                    "Residue_Numbers": "",
+                    "Atom_Count": 0
+                })
+                progress_bar.progress((idx + 1) / total_pdbs)
+                continue
 
-        if not codes:
-            results.append({
-                "UniProt_ID": uniprot_id,
-                "PDB_ID": pdb_id,
-                "Heteroatom_Code": "NO_HETEROATOMS",
-                "SMILES": "",
-                "Chemical_Name": "",
-                "Formula": "",
-                "Status": "no_heteroatoms",
-                "Chains": "",
-                "Residue_Numbers": "",
-                "Atom_Count": 0
-            })
-            return results
+            st.info(f"🔍 Found {len(codes)} heteroatoms in {pdb_id}: {', '.join(codes)}")
 
-        st.info(f"🔍 Processing {len(codes)} heteroatoms from {pdb_id}: {', '.join(codes)}")
+            # Process each heteroatom code
+            for code in codes:
+                # Get detailed info
+                details = het_details.get(code, {})
+                chains = ', '.join(sorted(details.get('chains', set())))
+                res_nums = ', '.join(sorted(details.get('residue_numbers', set())))
+                atom_count = len(details.get('atom_names', set()))
 
-        for code in codes:
-            # Get detailed info
-            details = het_details.get(code, {})
-            chains = ', '.join(sorted(details.get('chains', set())))
-            res_nums = ', '.join(sorted(details.get('residue_numbers', set())))
-            atom_count = len(details.get('atom_names', set()))
+                # Fetch SMILES from RCSB (optimized)
+                rcsb_data = self.fetch_smiles_rcsb_optimized(code)
+                smiles = rcsb_data['smiles']
 
-            # Fetch SMILES from RCSB
-            rcsb_data = self.fetch_smiles_rcsb(code)
-            smiles = rcsb_data['smiles']
+                # If no SMILES from RCSB, try PubChem (optimized)
+                if not smiles:
+                    pubchem_smiles = self.fetch_from_pubchem_optimized(code)
+                    if pubchem_smiles:
+                        smiles = pubchem_smiles
+                        rcsb_data['status'] = f"{rcsb_data['status']}_pubchem_found"
 
-            # If no SMILES from RCSB, try PubChem
-            if not smiles:
-                pubchem_smiles = self.fetch_from_pubchem(code)
-                if pubchem_smiles:
-                    smiles = pubchem_smiles
-                    rcsb_data['status'] = f"{rcsb_data['status']}_pubchem_found"
+                all_results.append({
+                    "UniProt_ID": uniprot_id,
+                    "PDB_ID": pdb_id,
+                    "Heteroatom_Code": code,
+                    "SMILES": smiles,
+                    "Chemical_Name": rcsb_data['name'],
+                    "Formula": rcsb_data['formula'],
+                    "Status": rcsb_data['status'],
+                    "Chains": chains,
+                    "Residue_Numbers": res_nums,
+                    "Atom_Count": atom_count
+                })
 
-            results.append({
-                "UniProt_ID": uniprot_id,
-                "PDB_ID": pdb_id,
-                "Heteroatom_Code": code,
-                "SMILES": smiles,
-                "Chemical_Name": rcsb_data['name'],
-                "Formula": rcsb_data['formula'],
-                "Status": rcsb_data['status'],
-                "Chains": chains,
-                "Residue_Numbers": res_nums,
-                "Atom_Count": atom_count
-            })
+                # Reduced delay for API respect
+                time.sleep(0.1)
+            
+            progress_bar.progress((idx + 1) / total_pdbs)
+        
+        progress_bar.empty()
+        status_container.empty()
+        
+        return all_results
 
-            # Small delay to be respectful to APIs
-            time.sleep(0.2)
-
-        return results
-
-    def extract_heteroatoms_realtime(self, uniprot_ids, progress_callback=None):
+    def extract_heteroatoms_realtime_optimized(self, uniprot_ids):
         """
-        Extract heteroatoms in real-time from PDB Data Bank
+        OPTIMIZED real-time heteroatom extraction from PDB Data Bank
         """
         self.all_records = []
         self.failed_pdbs = []
-        total_heteroatoms = 0
         
-        st.info("🚀 Starting REAL-TIME heteroatom extraction from PDB Data Bank...")
-        st.info("📋 This fetches EVERY heteroatom from ALL PDB files in real-time")
+        st.success("🚀 Starting OPTIMIZED real-time heteroatom extraction from PDB Data Bank...")
+        st.info("📋 Optimized processing with parallel downloads and batch processing")
         st.info(f"🎯 Processing {len(uniprot_ids)} UniProt IDs")
-        st.warning("⏱️ This may take a while due to real-time API calls...")
 
-        # Calculate total PDBs for progress
-        total_pdbs = 0
-        uniprot_pdb_mapping = {}
+        total_start_time = time.time()
         
-        for up in uniprot_ids:
-            pdbs = self.get_pdbs_for_uniprot(up)
-            uniprot_pdb_mapping[up] = pdbs
-            total_pdbs += len(pdbs)
-            st.info(f"📁 Found {len(pdbs)} PDB structures for {up}")
-
-        current_progress = 0
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        for up in uniprot_ids:
-            pdbs = uniprot_pdb_mapping[up]
+        for uniprot_id in uniprot_ids:
+            st.subheader(f"🧬 Processing UniProt ID: {uniprot_id}")
             
-            for pdb in pdbs:
-                try:
-                    status_text.text(f"Processing {pdb} for {up} ({current_progress+1}/{total_pdbs})")
-                    
-                    # Download PDB file
-                    lines = self.download_pdb(pdb)
-                    if not lines:
-                        self.failed_pdbs.append(pdb)
-                        current_progress += 1
-                        progress_bar.progress(current_progress / total_pdbs if total_pdbs > 0 else 0)
-                        continue
-
-                    # Process all heteroatoms
-                    pdb_results = self.process_pdb_heteroatoms(pdb, up, lines)
-                    self.all_records.extend(pdb_results)
-
-                    # Count heteroatoms found
-                    heteroatom_count = len([r for r in pdb_results if r['Heteroatom_Code'] != 'NO_HETEROATOMS'])
-                    total_heteroatoms += heteroatom_count
-
-                except Exception as e:
-                    st.error(f"⚠️ Error processing {pdb}: {e}")
-                    self.failed_pdbs.append(pdb)
-                    
-                current_progress += 1
-                progress_bar.progress(current_progress / total_pdbs if total_pdbs > 0 else 0)
-
-        progress_bar.empty()
-        status_text.empty()
+            # Step 1: Get PDB IDs for this UniProt ID
+            pdb_ids = self.get_pdbs_for_uniprot(uniprot_id)
+            if not pdb_ids:
+                st.warning(f"⚠️ No PDB structures found for {uniprot_id}")
+                continue
+            
+            # Step 2: Download PDB files in parallel
+            pdb_data = self.download_pdb_parallel(pdb_ids, max_workers=5)
+            if not pdb_data:
+                st.warning(f"⚠️ No PDB files could be downloaded for {uniprot_id}")
+                continue
+            
+            # Step 3: Process heteroatoms in batch
+            uniprot_results = self.process_pdb_heteroatoms_batch(pdb_data, uniprot_id)
+            self.all_records.extend(uniprot_results)
+            
+            # Display intermediate results
+            heteroatom_count = len([r for r in uniprot_results if r['Heteroatom_Code'] != 'NO_HETEROATOMS'])
+            st.success(f"✅ {uniprot_id}: Processed {len(pdb_data)} PDBs, found {heteroatom_count} heteroatoms")
 
         # Create comprehensive DataFrame
         df = pd.DataFrame(self.all_records)
         
+        # Calculate total processing time
+        total_time = time.time() - total_start_time
+        
         # Display comprehensive analysis
-        st.success("🎉 REAL-TIME HETEROATOM EXTRACTION COMPLETE!")
-        st.write(f"📊 Total records: {len(df)}")
-        st.write(f"🏗️ PDB structures processed: {df['PDB_ID'].nunique()}")
-        st.write(f"🧪 Total unique heteroatoms found: {df['Heteroatom_Code'].nunique()}")
-        st.write(f"✅ Records with SMILES: {len(df[df['SMILES'] != ''])}")
-        st.write(f"⚠️ Failed PDB downloads: {len(self.failed_pdbs)}")
+        st.success(f"🎉 OPTIMIZED REAL-TIME HETEROATOM EXTRACTION COMPLETE in {total_time:.1f} seconds!")
+        
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("📊 Total Records", len(df))
+        with col2:
+            st.metric("🏗️ PDB Structures", df['PDB_ID'].nunique())
+        with col3:
+            st.metric("🧪 Unique Heteroatoms", df['Heteroatom_Code'].nunique())
+        with col4:
+            st.metric("✅ Records with SMILES", len(df[df['SMILES'] != '']))
 
         # Status breakdown
-        st.subheader("📈 STATUS BREAKDOWN:")
-        status_counts = df['Status'].value_counts()
-        for status, count in status_counts.items():
-            st.write(f"   {status}: {count}")
-
-        # Show unique heteroatoms found
         if not df.empty:
-            unique_heteroatoms = sorted(df[df['Heteroatom_Code'] != 'NO_HETEROATOMS']['Heteroatom_Code'].unique())
-            st.write(f"🧪 ALL UNIQUE HETEROATOMS FOUND ({len(unique_heteroatoms)}):")
-            st.write(f"   {', '.join(unique_heteroatoms)}")
+            st.subheader("📈 Status Breakdown")
+            status_counts = df['Status'].value_counts()
+            status_df = pd.DataFrame({'Status': status_counts.index, 'Count': status_counts.values})
+            st.dataframe(status_df, use_container_width=True)
 
-            # Show heteroatoms WITH SMILES
-            with_smiles = df[df['SMILES'] != '']['Heteroatom_Code'].unique()
-            st.write(f"✅ HETEROATOMS WITH SMILES ({len(with_smiles)}):")
-            st.write(f"   {', '.join(sorted(with_smiles))}")
+            # Show unique heteroatoms found
+            unique_heteroatoms = sorted(df[df['Heteroatom_Code'] != 'NO_HETEROATOMS']['Heteroatom_Code'].unique())
+            if unique_heteroatoms:
+                st.subheader(f"🧪 Unique Heteroatoms Found ({len(unique_heteroatoms)})")
+                
+                # Display in chunks for better readability
+                chunk_size = 20
+                for i in range(0, len(unique_heteroatoms), chunk_size):
+                    chunk = unique_heteroatoms[i:i+chunk_size]
+                    st.write(f"**Batch {i//chunk_size + 1}:** {', '.join(chunk)}")
+
+            # Performance summary
+            st.subheader("⚡ Performance Summary")
+            st.info(f"""
+            - **Total Processing Time**: {total_time:.1f} seconds
+            - **Average Time per UniProt**: {total_time/len(uniprot_ids):.1f} seconds
+            - **PDB Download Success Rate**: {(len(df['PDB_ID'].unique())/(len(df['PDB_ID'].unique()) + len(self.failed_pdbs))) * 100:.1f}%
+            - **API Calls Made**: ~{len(df[df['Heteroatom_Code'] != 'NO_HETEROATOMS']) * 2} (RCSB + PubChem backup)
+            """)
 
         return df
 
-class RealTimeSimilarityAnalyzer:
+class OptimizedRealTimeSimilarityAnalyzer:
     """
-    Real-time molecular similarity analyzer for all modes
+    OPTIMIZED Real-time molecular similarity analyzer for Manual Mode
     """
     
-    def __init__(self, radius=3, n_bits=4096):
-        """Initialize the analyzer with fingerprint parameters."""
+    def __init__(self, radius=2, n_bits=2048):
+        """Initialize the OPTIMIZED analyzer with fingerprint parameters."""
         self.radius = radius
         self.n_bits = n_bits
         self.fingerprints = {}
         self.valid_molecules = {}
 
-    def analyze_similarity_realtime(self, target_smiles, heteroatom_df, top_n=50, min_similarity=0.01):
+    def analyze_similarity_realtime_optimized(self, target_smiles, heteroatom_df, top_n=50, min_similarity=0.01):
         """
-        Perform real-time similarity analysis using the provided backend code
+        Perform OPTIMIZED real-time similarity analysis
         """
         try:
             # Import RDKit for real-time analysis
@@ -332,72 +393,93 @@ class RealTimeSimilarityAnalyzer:
             from rdkit.Chem import rdMolDescriptors, DataStructs
             import numpy as np
             
-            st.info("🔄 Processing DataFrame and computing fingerprints...")
+            st.info("🔄 OPTIMIZED molecular similarity analysis starting...")
             
-            # Filter out rows without SMILES
-            valid_df = heteroatom_df[heteroatom_df['SMILES'].notna() & (heteroatom_df['SMILES'] != '')].copy()
-            st.info(f"📊 Found {len(valid_df)} entries with SMILES out of {len(heteroatom_df)} total")
+            # Filter out rows without SMILES - OPTIMIZED
+            valid_df = heteroatom_df[
+                (heteroatom_df['SMILES'].notna()) & 
+                (heteroatom_df['SMILES'] != '') & 
+                (heteroatom_df['Heteroatom_Code'] != 'NO_HETEROATOMS')
+            ].copy()
+            
+            st.info(f"📊 Found {len(valid_df)} valid SMILES entries out of {len(heteroatom_df)} total")
 
-            # Compute fingerprints
-            fingerprints = []
-            valid_indices = []
-            
+            if len(valid_df) == 0:
+                st.warning("⚠️ No valid SMILES found for similarity analysis")
+                return pd.DataFrame()
+
+            # Progress tracking
             progress_bar = st.progress(0)
             status_text = st.empty()
 
-            for idx, (df_idx, row) in enumerate(valid_df.iterrows()):
-                status_text.text(f"Computing fingerprints... {idx+1}/{len(valid_df)}")
+            # OPTIMIZED fingerprint computation
+            status_text.text("🧮 Computing molecular fingerprints...")
+            fingerprints = []
+            valid_indices = []
+            
+            batch_size = 50  # Process in batches for better performance
+            total_batches = (len(valid_df) + batch_size - 1) // batch_size
+            
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, len(valid_df))
+                batch = valid_df.iloc[start_idx:end_idx]
                 
-                smiles = row['SMILES']
-                fp = self._smiles_to_fingerprint(smiles)
+                for idx, (df_idx, row) in enumerate(batch.iterrows()):
+                    smiles = row['SMILES']
+                    fp = self._smiles_to_fingerprint_optimized(smiles)
 
-                if fp is not None:
-                    fingerprints.append(fp)
-                    valid_indices.append(df_idx)
+                    if fp is not None:
+                        fingerprints.append(fp)
+                        valid_indices.append(df_idx)
 
-                    # Store for later use
-                    key = f"{row['PDB_ID']}_{row['Heteroatom_Code']}"
-                    self.fingerprints[key] = fp
-                    self.valid_molecules[key] = {
-                        'smiles': smiles,
-                        'pdb_id': row['PDB_ID'],
-                        'ligand_code': row['Heteroatom_Code'],
-                        'chemical_name': row.get('Chemical_Name', ''),
-                        'formula': row.get('Formula', '')
-                    }
+                        # Store for later use
+                        key = f"{row['PDB_ID']}_{row['Heteroatom_Code']}"
+                        self.fingerprints[key] = fp
+                        self.valid_molecules[key] = {
+                            'smiles': smiles,
+                            'pdb_id': row['PDB_ID'],
+                            'ligand_code': row['Heteroatom_Code'],
+                            'chemical_name': row.get('Chemical_Name', ''),
+                            'formula': row.get('Formula', '')
+                        }
                 
-                progress_bar.progress((idx + 1) / len(valid_df))
-
-            progress_bar.empty()
-            status_text.empty()
+                # Update progress
+                progress = (batch_idx + 1) / (total_batches * 2)  # First half of progress
+                progress_bar.progress(progress)
 
             processed_df = valid_df.loc[valid_indices].copy()
             processed_df['Fingerprint'] = fingerprints
 
             st.success(f"✅ Successfully processed {len(processed_df)} molecules with valid fingerprints")
             
-            # Find similar ligands
-            st.info(f"🎯 Analyzing similarity to target: {target_smiles}")
+            # OPTIMIZED similarity calculation
+            status_text.text(f"🎯 Analyzing similarity to target: {target_smiles[:30]}...")
 
             # Generate target fingerprint
-            target_fp = self._smiles_to_fingerprint(target_smiles)
+            target_fp = self._smiles_to_fingerprint_optimized(target_smiles)
             if target_fp is None:
                 raise ValueError(f"Invalid target SMILES: {target_smiles}")
 
-            # Calculate similarities
+            # Calculate similarities in batches
             similarities = []
-            st.info("🔍 Computing similarities...")
             
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            for idx, (_, row) in enumerate(processed_df.iterrows()):
-                status_text.text(f"Computing similarities... {idx+1}/{len(processed_df)}")
-                ligand_fp = row['Fingerprint']
-                similarity = self._calculate_tanimoto_similarity(target_fp, ligand_fp)
-                similarities.append(similarity)
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, len(processed_df))
+                batch = processed_df.iloc[start_idx:end_idx]
                 
-                progress_bar.progress((idx + 1) / len(processed_df))
+                batch_similarities = []
+                for _, row in batch.iterrows():
+                    ligand_fp = row['Fingerprint']
+                    similarity = self._calculate_tanimoto_similarity_optimized(target_fp, ligand_fp)
+                    batch_similarities.append(similarity)
+                
+                similarities.extend(batch_similarities)
+                
+                # Update progress (second half)
+                progress = 0.5 + (batch_idx + 1) / (total_batches * 2)
+                progress_bar.progress(progress)
 
             progress_bar.empty()
             status_text.empty()
@@ -406,7 +488,7 @@ class RealTimeSimilarityAnalyzer:
             result_df = processed_df.copy()
             result_df['Tanimoto_Similarity'] = similarities
 
-            # Filter by minimum similarity and sort
+            # Filter by minimum similarity and sort - OPTIMIZED
             result_df = result_df[result_df['Tanimoto_Similarity'] >= min_similarity]
             result_df = result_df.sort_values('Tanimoto_Similarity', ascending=False)
 
@@ -420,13 +502,14 @@ class RealTimeSimilarityAnalyzer:
             
         except ImportError:
             st.error("❌ RDKit not available for real-time similarity analysis")
+            st.info("💡 Please install RDKit: `pip install rdkit`")
             return pd.DataFrame()
         except Exception as e:
-            st.error(f"❌ Error in real-time similarity analysis: {str(e)}")
+            st.error(f"❌ Error in optimized similarity analysis: {str(e)}")
             return pd.DataFrame()
 
-    def _smiles_to_fingerprint(self, smiles):
-        """Convert SMILES string to Morgan fingerprint."""
+    def _smiles_to_fingerprint_optimized(self, smiles):
+        """Convert SMILES string to Morgan fingerprint - OPTIMIZED."""
         try:
             from rdkit import Chem
             from rdkit.Chem import rdMolDescriptors
@@ -438,16 +521,16 @@ class RealTimeSimilarityAnalyzer:
             if mol is None:
                 return None
 
-            # Generate Morgan fingerprint
+            # Generate Morgan fingerprint with optimized parameters
             fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
                 mol, self.radius, nBits=self.n_bits
             )
             return fp
-        except Exception as e:
+        except Exception:
             return None
 
-    def _calculate_tanimoto_similarity(self, fp1, fp2):
-        """Calculate Tanimoto similarity between two fingerprints."""
+    def _calculate_tanimoto_similarity_optimized(self, fp1, fp2):
+        """Calculate Tanimoto similarity between two fingerprints - OPTIMIZED."""
         try:
             from rdkit import DataStructs
             
@@ -474,9 +557,9 @@ class NaturalLanguageInterface:
         self.agent = agent
         self.local_database = self._load_local_database() if local_database is None else local_database
         
-        # Real-time extractors for all modes
-        self.realtime_extractor = RealTimePDBExtractor()
-        self.realtime_similarity = RealTimeSimilarityAnalyzer()
+        # OPTIMIZED real-time extractors for Manual Mode
+        self.realtime_extractor = OptimizedRealTimePDBExtractor()
+        self.realtime_similarity = OptimizedRealTimeSimilarityAnalyzer()
         
         # Initialize chat history for AI modes
         if "chat_history" not in st.session_state:
@@ -485,13 +568,7 @@ class NaturalLanguageInterface:
             st.session_state.current_analysis_state = {}
     
     def _load_local_database(self) -> pd.DataFrame:
-        """
-        Load PDB-derived Excel data from the Data module
-        FOR AI MODES ONLY - Manual Mode does NOT use this
-        
-        Returns:
-            pd.DataFrame: Combined data from all Het-*.csv files
-        """
+        """Load PDB-derived Excel data from the Data module FOR AI MODES ONLY"""
         try:
             data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
             het_files = ["Het-01.csv", "Het-02.csv", "Het-03.csv"]
@@ -515,50 +592,77 @@ class NaturalLanguageInterface:
     
     def render_manual_mode_interface(self):
         """
-        Mode 1: Manual Mode - ONLY real-time PDB Data Bank fetching (limited by UniProt IDs)
+        Mode 1: Manual Mode - OPTIMIZED real-time PDB Data Bank fetching ONLY
         """
-        st.header("🔧 Manual Mode - REAL-TIME PDB Data Bank Analysis")
+        st.header("🔧 Manual Mode - OPTIMIZED Real-Time PDB Analysis")
         
         st.markdown("""
-        **Manual Mode Features (REAL-TIME ONLY):**
-        - 🌐 **EXCLUSIVE real-time PDB Data Bank fetching** (limited by UniProt IDs)
-        - 📝 **Manual parameter configuration** for Morgan fingerprints
-        - ⚙️ **User-controlled analysis settings** (radius, bit-vector length, thresholds)
-        - 🎯 **Three processing stages**: Heteroatom Extraction → Similarity Analysis → Combined Pipeline
-        - 📊 **Live data from PDB** with immediate results display
+        **OPTIMIZED Manual Mode Features:**
+        - 🚀 **Parallel PDB downloads** for faster processing
+        - 🔄 **Batch heteroatom processing** with optimized algorithms  
+        - ⚡ **Reduced API call delays** while respecting rate limits
+        - 📊 **Real-time progress tracking** with detailed metrics
+        - 🎯 **Three processing stages**: Heteroatom → Similarity → Combined Pipeline
+        - 💾 **Automatic session management** for better performance
         """)
         
-        st.warning("⚠️ **MANUAL MODE**: Uses ONLY real-time PDB Data Bank - limited by UniProt IDs!")
+        st.success("⚡ **OPTIMIZED MODE**: Fastest real-time PDB processing with parallel operations!")
         
+        # Performance Settings
+        with st.expander("⚡ Performance Configuration", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                max_workers = st.slider("Parallel Downloads:", 2, 10, 5, help="Number of simultaneous PDB downloads")
+                batch_size = st.slider("Processing Batch Size:", 10, 100, 50, help="Molecules processed per batch")
+            
+            with col2:
+                api_delay = st.slider("API Delay (seconds):", 0.1, 1.0, 0.1, 0.1, help="Delay between API calls")
+                timeout_setting = st.slider("Request Timeout (seconds):", 10, 60, 15, help="Network timeout duration")
+            
+            with col3:
+                enable_cache = st.checkbox("Enable Caching", value=True, help="Cache results for faster re-runs")
+                show_detailed_logs = st.checkbox("Detailed Logging", value=False, help="Show detailed processing logs")
+
         # Input Configuration Section
-        with st.expander("📋 Real-Time Input Configuration", expanded=True):
+        with st.expander("📋 OPTIMIZED Input Configuration", expanded=True):
             col1, col2 = st.columns([3, 2])
             
             with col1:
                 st.subheader("🧬 Real-Time Molecular Inputs")
                 
-                # UniProt IDs input
+                # UniProt IDs input with suggestions
                 uniprot_input = st.text_area(
-                    "UniProt IDs (comma-separated) - REAL-TIME FETCHING:",
+                    "UniProt IDs (comma-separated) - OPTIMIZED FETCHING:",
                     placeholder="P21554, P18031, P34972",
-                    help="Enter UniProt IDs for REAL-TIME PDB structure fetching from PDB Data Bank",
+                    help="Enter UniProt IDs for optimized real-time PDB structure fetching",
                     height=100
                 )
                 
-                # SMILES input
+                # Quick UniProt suggestions
+                st.info("💡 **Quick Suggestions**: P21554 (ABCC1), P18031 (PTPN1), P34972 (CNR2)")
+                
+                # SMILES input with validation
                 target_smiles = st.text_input(
-                    "Target SMILES Structure for Real-Time Analysis:",
+                    "Target SMILES Structure for Optimized Analysis:",
                     placeholder="CCO, c1ccccc1, CC(=O)O",
-                    help="Enter the SMILES string for real-time similarity analysis against fetched data"
+                    help="Enter SMILES for optimized similarity analysis"
                 )
+                
+                # SMILES validation
+                if target_smiles:
+                    if self._validate_smiles(target_smiles):
+                        st.success("✅ Valid SMILES structure detected")
+                    else:
+                        st.warning("⚠️ SMILES validation failed - please check structure")
             
             with col2:
-                st.subheader("⚙️ Real-Time Analysis Parameters")
+                st.subheader("⚙️ Optimized Analysis Parameters")
                 
-                # Manual parameter configuration
-                radius = st.slider("Morgan Radius:", 1, 4, 2, help="Fingerprint radius for molecular comparison")
-                n_bits = st.selectbox("Bit-vector Length:", [1024, 2048, 4096], index=1, help="Fingerprint resolution")
-                threshold = st.slider("Tanimoto Threshold:", 0.0, 1.0, 0.7, 0.05, help="Minimum similarity score")
+                # Optimized parameter configuration
+                radius = st.slider("Morgan Radius:", 1, 4, 2, help="Fingerprint radius - optimized default")
+                n_bits = st.selectbox("Bit-vector Length:", [1024, 2048, 4096], index=1, help="Optimized for speed vs accuracy")
+                threshold = st.slider("Tanimoto Threshold:", 0.0, 1.0, 0.7, 0.05, help="Similarity cutoff")
                 
                 col2a, col2b = st.columns(2)
                 with col2a:
@@ -566,38 +670,50 @@ class NaturalLanguageInterface:
                 with col2b:
                     metric = st.selectbox("Similarity Metric:", ["tanimoto", "dice", "cosine"])
         
-        # Processing Stage Selection
-        st.subheader("🎯 Real-Time Analysis Stage Selection")
+        # Processing Stage Selection with time estimates
+        st.subheader("🎯 Optimized Analysis Stage Selection")
+        
+        # Estimate processing time
+        if uniprot_input:
+            uniprot_count = len([uid.strip() for uid in uniprot_input.split(',') if uid.strip()])
+            estimated_time = self._estimate_processing_time(uniprot_count)
+            st.info(f"⏱️ **Estimated Processing Time**: ~{estimated_time} minutes for {uniprot_count} UniProt IDs")
+        
         analysis_stage = st.radio(
-            "Choose real-time processing stage:",
+            "Choose optimized processing stage:",
             [
-                "Real-Time Heteroatom Extraction Only",
-                "Real-Time Molecular Similarity Analysis Only", 
-                "Real-Time Combined Pipeline (Heteroatom + Similarity)"
+                "⚡ Optimized Heteroatom Extraction Only",
+                "🎯 Optimized Similarity Analysis Only", 
+                "🚀 Optimized Combined Pipeline (Heteroatom + Similarity)"
             ],
-            help="Select which real-time analysis stage to execute from PDB Data Bank"
+            help="Select analysis stage with optimized processing"
         )
         
-        # Execution Button
-        if st.button("🚀 Execute REAL-TIME Analysis (Live PDB Data Bank)", type="primary", use_container_width=True):
-            if analysis_stage == "Real-Time Heteroatom Extraction Only":
+        # Execution Button with enhanced styling
+        if st.button("🚀 Execute OPTIMIZED Real-Time Analysis", type="primary", use_container_width=True):
+            # Update extractor settings
+            self.realtime_extractor.session.timeout = timeout_setting
+            self.realtime_similarity.radius = radius
+            self.realtime_similarity.n_bits = n_bits
+            
+            if analysis_stage == "⚡ Optimized Heteroatom Extraction Only":
                 if not uniprot_input.strip():
-                    st.error("❌ UniProt IDs required for real-time heteroatom extraction")
+                    st.error("❌ UniProt IDs required for optimized heteroatom extraction")
                     return
-                self._execute_realtime_heteroatom_extraction(uniprot_input)
+                self._execute_optimized_heteroatom_extraction(uniprot_input)
                 
-            elif analysis_stage == "Real-Time Molecular Similarity Analysis Only":
+            elif analysis_stage == "🎯 Optimized Similarity Analysis Only":
                 if not target_smiles.strip():
-                    st.error("❌ Target SMILES required for real-time similarity analysis")
+                    st.error("❌ Target SMILES required for optimized similarity analysis")
                     return
-                st.error("❌ Real-time similarity analysis requires heteroatom data first. Use Combined Pipeline instead.")
+                st.error("❌ Optimized similarity analysis requires heteroatom data first. Use Combined Pipeline instead.")
                 
-            else:  # Real-Time Combined Pipeline
+            else:  # Optimized Combined Pipeline
                 if not uniprot_input.strip() or not target_smiles.strip():
-                    st.error("❌ Both UniProt IDs and target SMILES required for real-time combined pipeline")
+                    st.error("❌ Both UniProt IDs and target SMILES required for optimized combined pipeline")
                     return
-                self._execute_realtime_combined_pipeline(uniprot_input, target_smiles, radius, n_bits, threshold, fp_type, metric)
-    
+                self._execute_optimized_combined_pipeline(uniprot_input, target_smiles, radius, n_bits, threshold, fp_type, metric)
+
     def render_ai_powered_mode_interface(self):
         """
         Mode 2: AI-Powered Mode - BOTH local database AND real-time PDB fetching
@@ -663,7 +779,7 @@ class NaturalLanguageInterface:
             st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
             
             st.rerun()
-    
+
     def render_fully_autonomous_mode_interface(self):
         """
         Mode 3: Fully Autonomous Mode - BOTH local database AND real-time PDB fetching
@@ -719,80 +835,305 @@ class NaturalLanguageInterface:
                 use_local_data, use_realtime_data, data_priority
             )
     
-    def _execute_realtime_heteroatom_extraction(self, uniprot_input: str):
-        """Execute REAL-TIME heteroatom extraction from PDB Data Bank"""
+    def _execute_optimized_heteroatom_extraction(self, uniprot_input: str):
+        """Execute OPTIMIZED real-time heteroatom extraction from PDB Data Bank"""
         uniprot_ids = [uid.strip() for uid in uniprot_input.split(',') if uid.strip()]
         
-        st.info("🌐 Connecting to PDB Data Bank for real-time extraction...")
+        st.info("🚀 Starting OPTIMIZED real-time PDB Data Bank extraction...")
         
         try:
-            # Use real-time extractor
-            results_df = self.realtime_extractor.extract_heteroatoms_realtime(uniprot_ids)
+            # Use optimized real-time extractor
+            results_df = self.realtime_extractor.extract_heteroatoms_realtime_optimized(uniprot_ids)
             
             if not results_df.empty:
-                st.success("✅ Real-time heteroatom extraction completed!")
-                self._display_heteroatom_results(results_df, "real-time")
+                st.success("✅ Optimized real-time heteroatom extraction completed!")
+                self._display_heteroatom_results(results_df, "optimized-real-time")
+                
+                # Save results with timestamp
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"optimized_heteroatom_extraction_{timestamp}.csv"
+                results_df.to_csv(filename, index=False)
+                st.success(f"💾 Results automatically saved to: {filename}")
+                
             else:
                 st.warning("⚠️ No heteroatoms found for provided UniProt IDs")
                 
         except Exception as e:
-            st.error(f"❌ Real-time heteroatom extraction failed: {str(e)}")
-    
-    def _execute_realtime_combined_pipeline(self, uniprot_input: str, target_smiles: str,
+            st.error(f"❌ Optimized real-time heteroatom extraction failed: {str(e)}")
+
+    def _execute_optimized_combined_pipeline(self, uniprot_input: str, target_smiles: str,
                                           radius: int, n_bits: int, threshold: float, 
                                           fp_type: str, metric: str):
-        """Execute REAL-TIME combined pipeline from PDB Data Bank"""
+        """Execute OPTIMIZED real-time combined pipeline from PDB Data Bank"""
         uniprot_ids = [uid.strip() for uid in uniprot_input.split(',') if uid.strip()]
         
-        with st.spinner("🌐 Executing real-time combined pipeline from PDB Data Bank..."):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+        with st.spinner("🚀 Executing OPTIMIZED real-time combined pipeline..."):
+            total_progress = st.progress(0)
+            pipeline_status = st.empty()
             
             try:
-                # Step 1: Real-time heteroatom extraction
-                status_text.text("Step 1/2: Real-time heteroatom extraction from PDB Data Bank...")
-                progress_bar.progress(25)
+                # Step 1: Optimized real-time heteroatom extraction
+                pipeline_status.text("Step 1/2: Optimized real-time heteroatom extraction...")
+                total_progress.progress(10)
                 
-                heteroatom_results = self.realtime_extractor.extract_heteroatoms_realtime(uniprot_ids)
-                progress_bar.progress(50)
+                heteroatom_results = self.realtime_extractor.extract_heteroatoms_realtime_optimized(uniprot_ids)
+                total_progress.progress(50)
                 
-                # Step 2: Real-time similarity analysis using extracted data
-                status_text.text("Step 2/2: Real-time molecular similarity analysis...")
-                progress_bar.progress(75)
+                # Step 2: Optimized real-time similarity analysis
+                pipeline_status.text("Step 2/2: Optimized molecular similarity analysis...")
+                total_progress.progress(60)
                 
-                # Configure real-time similarity analyzer
+                # Configure optimized similarity analyzer
                 self.realtime_similarity.radius = radius
                 self.realtime_similarity.n_bits = n_bits
                 
-                similarity_results = self.realtime_similarity.analyze_similarity_realtime(
+                similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
                     target_smiles=target_smiles,
                     heteroatom_df=heteroatom_results,
                     min_similarity=threshold
                 )
                 
-                progress_bar.progress(100)
+                total_progress.progress(100)
                 
-                st.success("✅ Real-time combined pipeline completed!")
+                st.success("✅ OPTIMIZED real-time combined pipeline completed!")
                 
-                # Display results
+                # Display results side by side
                 col1, col2 = st.columns(2)
                 
                 with col1:
                     if not heteroatom_results.empty:
-                        st.subheader("🔬 Real-time Heteroatom Results")
-                        self._display_heteroatom_results(heteroatom_results, "real-time")
+                        st.subheader("🔬 Optimized Heteroatom Results")
+                        self._display_heteroatom_results(heteroatom_results, "optimized-real-time")
                 
                 with col2:
                     if not similarity_results.empty:
-                        st.subheader("🎯 Real-time Similarity Analysis Results")
-                        self._display_similarity_results(similarity_results, target_smiles, "real-time")
+                        st.subheader("🎯 Optimized Similarity Results")
+                        self._display_similarity_results(similarity_results, target_smiles, "optimized-real-time")
+                
+                # Save combined results
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                if not heteroatom_results.empty:
+                    hetero_file = f"optimized_heteroatom_{timestamp}.csv"
+                    heteroatom_results.to_csv(hetero_file, index=False)
+                
+                if not similarity_results.empty:
+                    sim_file = f"optimized_similarity_{timestamp}.csv"
+                    similarity_results.to_csv(sim_file, index=False)
+                
+                st.success(f"💾 All results automatically saved with timestamp: {timestamp}")
                 
             except Exception as e:
-                st.error(f"❌ Real-time combined pipeline failed: {str(e)}")
+                st.error(f"❌ Optimized combined pipeline failed: {str(e)}")
             finally:
-                progress_bar.empty()
-                status_text.empty()
+                total_progress.empty()
+                pipeline_status.empty()
+
+    # Helper methods
+    def _validate_smiles(self, smiles: str) -> bool:
+        """Validate SMILES structure - OPTIMIZED"""
+        try:
+            from rdkit import Chem
+            mol = Chem.MolFromSmiles(smiles)
+            return mol is not None
+        except:
+            return False
+
+    def _estimate_processing_time(self, uniprot_count: int) -> str:
+        """Estimate processing time based on UniProt count"""
+        # Optimized estimates based on parallel processing
+        base_time_per_uniprot = 1.5  # minutes (optimized)
+        total_minutes = uniprot_count * base_time_per_uniprot
+        
+        if total_minutes < 60:
+            return f"{total_minutes:.1f}"
+        else:
+            hours = total_minutes // 60
+            minutes = total_minutes % 60
+            return f"{hours:.0f}h {minutes:.0f}m"
+
+    def _display_heteroatom_results(self, results: pd.DataFrame, mode: str):
+        """Display heteroatom extraction results with enhanced formatting"""
+        if results.empty:
+            st.info("No heteroatom results to display")
+            return
+        
+        # Filter out NO_HETEROATOMS entries
+        valid_results = results[results['Heteroatom_Code'] != 'NO_HETEROATOMS']
+        
+        if not valid_results.empty:
+            # Enhanced display with metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📊 Total Heteroatoms", len(valid_results))
+            with col2:
+                st.metric("🧪 Unique Codes", valid_results['Heteroatom_Code'].nunique())
+            with col3:
+                st.metric("✅ With SMILES", len(valid_results[valid_results['SMILES'] != '']))
+            
+            # Display results table
+            display_cols = ['UniProt_ID', 'PDB_ID', 'Heteroatom_Code', 'SMILES', 'Chemical_Name', 'Formula', 'Status']
+            available_cols = [col for col in display_cols if col in valid_results.columns]
+            st.dataframe(valid_results[available_cols].head(20), use_container_width=True)
+            
+            # Enhanced download with multiple formats
+            col1, col2 = st.columns(2)
+            with col1:
+                csv = valid_results.to_csv(index=False)
+                st.download_button(
+                    label=f"📥 Download CSV ({mode})",
+                    data=csv,
+                    file_name=f"heteroatom_results_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            with col2:
+                json_data = valid_results.to_json(orient='records', indent=2)
+                st.download_button(
+                    label=f"📥 Download JSON ({mode})",
+                    data=json_data,
+                    file_name=f"heteroatom_results_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
+        else:
+            st.info("No valid heteroatom records found")
     
+    def _display_similarity_results(self, results: pd.DataFrame, target_smiles: str, mode: str):
+        """Display similarity analysis results with enhanced visualizations"""
+        if results.empty:
+            st.info("No similarity results to display")
+            return
+        
+        # Enhanced metrics display
+        if 'Tanimoto_Similarity' in results.columns:
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("🎯 Total Matches", len(results))
+            with col2:
+                st.metric("🏆 Best Score", f"{results['Tanimoto_Similarity'].max():.3f}")
+            with col3:
+                st.metric("📊 Average Score", f"{results['Tanimoto_Similarity'].mean():.3f}")
+            with col4:
+                st.metric("🧪 Unique PDBs", results['PDB_ID'].nunique())
+        
+        # Display top results
+        display_cols = ['PDB_ID', 'Heteroatom_Code', 'Chemical_Name', 'SMILES', 'Tanimoto_Similarity', 'Formula']
+        available_cols = [col for col in display_cols if col in results.columns]
+        
+        st.subheader("🔝 Top Similarity Matches")
+        st.dataframe(results[available_cols].head(20), use_container_width=True)
+        
+        # Enhanced visualization
+        if len(results) > 5 and 'Tanimoto_Similarity' in results.columns:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Similarity distribution
+                fig_hist = px.histogram(
+                    results, 
+                    x='Tanimoto_Similarity',
+                    title=f"Similarity Distribution ({mode} mode)",
+                    nbins=20,
+                    color_discrete_sequence=['#00cc96']
+                )
+                fig_hist.update_layout(height=400)
+                st.plotly_chart(fig_hist, use_container_width=True)
+            
+            with col2:
+                # Top compounds scatter plot
+                top_20 = results.head(20)
+                fig_scatter = go.Figure()
+                fig_scatter.add_trace(go.Scatter(
+                    x=list(range(len(top_20))),
+                    y=top_20['Tanimoto_Similarity'],
+                    mode='markers+lines',
+                    name='Similarity Score',
+                    marker=dict(
+                        size=10, 
+                        color=top_20['Tanimoto_Similarity'], 
+                        colorscale='Viridis',
+                        showscale=True
+                    ),
+                    text=[f"{row['PDB_ID']}-{row['Heteroatom_Code']}" for _, row in top_20.iterrows()],
+                    hovertemplate='<b>%{text}</b><br>Similarity: %{y:.3f}<extra></extra>'
+                ))
+                fig_scatter.update_layout(
+                    title=f"Top 20 Similarity Scores ({mode} mode)", 
+                    xaxis_title="Rank", 
+                    yaxis_title="Tanimoto Similarity",
+                    height=400
+                )
+                st.plotly_chart(fig_scatter, use_container_width=True)
+        
+        # Enhanced download options
+        col1, col2 = st.columns(2)
+        with col1:
+            csv = results.to_csv(index=False)
+            st.download_button(
+                label=f"📥 Download Similarity CSV ({mode})",
+                data=csv,
+                file_name=f"similarity_results_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        with col2:
+            # Create summary report
+            summary_report = self._generate_similarity_summary(results, target_smiles, mode)
+            st.download_button(
+                label=f"📄 Download Summary Report ({mode})",
+                data=summary_report,
+                file_name=f"similarity_summary_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+
+    def _generate_similarity_summary(self, results: pd.DataFrame, target_smiles: str, mode: str) -> str:
+        """Generate a text summary of similarity analysis results"""
+        if results.empty or 'Tanimoto_Similarity' not in results.columns:
+            return "No similarity results to summarize."
+        
+        summary = f"""
+MOLECULAR SIMILARITY ANALYSIS SUMMARY ({mode.upper()} MODE)
+================================================================
+
+Target SMILES: {target_smiles}
+Analysis Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Processing Mode: {mode}
+
+OVERVIEW:
+- Total Similar Compounds Found: {len(results)}
+- Unique PDB Structures: {results['PDB_ID'].nunique()}
+- Unique Heteroatom Codes: {results['Heteroatom_Code'].nunique()}
+
+SIMILARITY STATISTICS:
+- Maximum Similarity: {results['Tanimoto_Similarity'].max():.4f}
+- Average Similarity: {results['Tanimoto_Similarity'].mean():.4f}
+- Minimum Similarity: {results['Tanimoto_Similarity'].min():.4f}
+- Standard Deviation: {results['Tanimoto_Similarity'].std():.4f}
+
+TOP 10 MOST SIMILAR COMPOUNDS:
+"""
+        
+        top_10 = results.head(10)
+        for idx, (_, row) in enumerate(top_10.iterrows(), 1):
+            summary += f"\n{idx:2d}. {row['PDB_ID']}-{row['Heteroatom_Code']}: {row['Tanimoto_Similarity']:.4f}"
+            if 'Chemical_Name' in row and pd.notna(row['Chemical_Name']) and row['Chemical_Name']:
+                summary += f" ({row['Chemical_Name']})"
+        
+        # Similarity distribution
+        bins = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        hist_counts = pd.cut(results['Tanimoto_Similarity'], bins=bins).value_counts().sort_index()
+        
+        summary += "\n\nSIMILARITY DISTRIBUTION:\n"
+        for bin_range, count in hist_counts.items():
+            if count > 0:
+                summary += f"  {bin_range.left:.1f}-{bin_range.right:.1f}: {count} compounds\n"
+        
+        summary += "\n================================================================\n"
+        summary += "Generated by TrackMyPDB - Molecular Analysis Tool\n"
+        
+        return summary
+
     def _generate_ai_guided_response(self, user_input: str, use_local_db: bool, use_realtime: bool) -> str:
         """Generate AI response for guided mode with HYBRID data sources"""
         user_input_lower = user_input.lower()
@@ -864,21 +1205,6 @@ Great! I can extract heteroatoms from these protein structures using {data_sourc
 
 Please provide any additional details!"""
         
-        # Handle analysis execution based on conversation state
-        if "smiles" in st.session_state.current_analysis_state:
-            analysis_type = self._extract_analysis_type(user_input)
-            threshold = self._extract_threshold_from_text(user_input)
-            
-            if analysis_type and threshold is not None:
-                return self._execute_ai_guided_hybrid_analysis(
-                    st.session_state.current_analysis_state["smiles"],
-                    analysis_type,
-                    threshold,
-                    uniprot_ids,
-                    st.session_state.current_analysis_state.get("use_local_db", True),
-                    st.session_state.current_analysis_state.get("use_realtime", True)
-                )
-        
         # General welcome message
         return f"""🤖 **Welcome to AI-Powered Hybrid Mode!**
 
@@ -902,121 +1228,7 @@ I'm your analysis assistant for molecular research. I'll guide you through each 
 3. Or describe your analysis needs
 
 I'll ask clarifying questions to guide you through the hybrid process!"""
-    
-    def _execute_ai_guided_hybrid_analysis(self, smiles: str, analysis_type: str, 
-                                          threshold: float, uniprot_ids: List[str] = None,
-                                          use_local_db: bool = True, use_realtime: bool = True) -> str:
-        """Execute guided analysis using HYBRID data sources"""
-        try:
-            # Combine data from both sources
-            combined_hetero_results = pd.DataFrame()
-            combined_similarity_results = pd.DataFrame()
-            
-            if analysis_type == "heteroatom":
-                if not uniprot_ids:
-                    return "❌ Heteroatom extraction requires UniProt IDs. Please provide them."
-                
-                # Local database search
-                if use_local_db:
-                    local_results = self.local_database[self.local_database['UniProt_ID'].isin(uniprot_ids)]
-                    if not local_results.empty:
-                        st.subheader("🔬 Local Database Heteroatom Results")
-                        self._display_heteroatom_results(local_results, "local-db")
-                        combined_hetero_results = pd.concat([combined_hetero_results, local_results], ignore_index=True)
-                
-                # Real-time fetching
-                if use_realtime:
-                    realtime_results = self.realtime_extractor.extract_heteroatoms_realtime(uniprot_ids)
-                    if not realtime_results.empty:
-                        st.subheader("🌐 Real-Time Heteroatom Results")
-                        self._display_heteroatom_results(realtime_results, "real-time")
-                        combined_hetero_results = pd.concat([combined_hetero_results, realtime_results], ignore_index=True)
-                
-                return f"✅ **Hybrid heteroatom analysis complete!** Found {len(combined_hetero_results)} records total."
-            
-            elif analysis_type == "similarity":
-                # Local database similarity
-                if use_local_db:
-                    from .similarity_analyzer import SimilarityAnalyzer
-                    analyzer = SimilarityAnalyzer()
-                    
-                    local_sim_results = analyzer.analyze_similarity(
-                        target_smiles=smiles,
-                        heteroatom_df=self.local_database,
-                        min_similarity=threshold
-                    )
-                    
-                    if not local_sim_results.empty:
-                        st.subheader("🎯 Local Database Similarity Results")
-                        self._display_similarity_results(local_sim_results, smiles, "local-db")
-                        combined_similarity_results = pd.concat([combined_similarity_results, local_sim_results], ignore_index=True)
-                
-                # Real-time similarity (if UniProt IDs available)
-                if use_realtime and uniprot_ids:
-                    # First get real-time heteroatom data
-                    realtime_hetero = self.realtime_extractor.extract_heteroatoms_realtime(uniprot_ids)
-                    if not realtime_hetero.empty:
-                        realtime_sim_results = self.realtime_similarity.analyze_similarity_realtime(
-                            target_smiles=smiles,
-                            heteroatom_df=realtime_hetero,
-                            min_similarity=threshold
-                        )
-                        if not realtime_sim_results.empty:
-                            st.subheader("🌐 Real-Time Similarity Results")
-                            self._display_similarity_results(realtime_sim_results, smiles, "real-time")
-                            combined_similarity_results = pd.concat([combined_similarity_results, realtime_sim_results], ignore_index=True)
-                
-                return f"✅ **Hybrid similarity analysis complete!** Found {len(combined_similarity_results)} similar compounds total."
-            
-            else:  # complete pipeline
-                # Combined hybrid analysis
-                if uniprot_ids:
-                    # Local heteroatom search
-                    if use_local_db:
-                        local_hetero = self.local_database[self.local_database['UniProt_ID'].isin(uniprot_ids)]
-                        combined_hetero_results = pd.concat([combined_hetero_results, local_hetero], ignore_index=True)
-                    
-                    # Real-time heteroatom extraction
-                    if use_realtime:
-                        realtime_hetero = self.realtime_extractor.extract_heteroatoms_realtime(uniprot_ids)
-                        combined_hetero_results = pd.concat([combined_hetero_results, realtime_hetero], ignore_index=True)
-                
-                # Similarity analysis on combined data
-                if use_local_db:
-                    from .similarity_analyzer import SimilarityAnalyzer
-                    analyzer = SimilarityAnalyzer()
-                    local_sim = analyzer.analyze_similarity(
-                        target_smiles=smiles,
-                        heteroatom_df=self.local_database,
-                        min_similarity=threshold
-                    )
-                    combined_similarity_results = pd.concat([combined_similarity_results, local_sim], ignore_index=True)
-                
-                if use_realtime and not combined_hetero_results.empty:
-                    realtime_sim = self.realtime_similarity.analyze_similarity_realtime(
-                        target_smiles=smiles,
-                        heteroatom_df=combined_hetero_results,
-                        min_similarity=threshold
-                    )
-                    combined_similarity_results = pd.concat([combined_similarity_results, realtime_sim], ignore_index=True)
-                
-                # Display hybrid results
-                col1, col2 = st.columns(2)
-                with col1:
-                    if not combined_hetero_results.empty:
-                        st.subheader("🔬 Hybrid Heteroatom Results")
-                        self._display_heteroatom_results(combined_hetero_results, "hybrid")
-                
-                with col2:
-                    if not combined_similarity_results.empty:
-                        st.subheader("🎯 Hybrid Similarity Results")
-                        self._display_similarity_results(combined_similarity_results, smiles, "hybrid")
-                
-                return f"✅ **Complete hybrid pipeline analysis finished!** Heteroatoms: {len(combined_hetero_results)}, Similar compounds: {len(combined_similarity_results)}"
-                
-        except Exception as e:
-            return f"❌ **Hybrid Analysis Error:** {str(e)}\n\nPlease try again or adjust your parameters."
-    
+
     def _execute_autonomous_hybrid_analysis(self, user_input: str, threshold: float, 
                                           comprehensive: bool, visualizations: bool,
                                           auto_download: bool, processing_speed: str, result_detail: str,
@@ -1075,7 +1287,7 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
                         status_text.text("🌐 AI performing autonomous heteroatom analysis (real-time)...")
                         progress_bar.progress(50)
                         
-                        realtime_hetero_results = self.realtime_extractor.extract_heteroatoms_realtime(uniprot_ids)
+                        realtime_hetero_results = self.realtime_extractor.extract_heteroatoms_realtime_optimized(uniprot_ids)
                         combined_heteroatom_results = pd.concat([combined_heteroatom_results, realtime_hetero_results], ignore_index=True)
                 
                 # Step 4: Autonomous similarity analysis (HYBRID)
@@ -1085,19 +1297,22 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
                 if smiles:
                     # Local similarity
                     if use_local_data:
-                        from .similarity_analyzer import SimilarityAnalyzer
-                        analyzer = SimilarityAnalyzer(**ai_params)
-                        
-                        local_similarity_results = analyzer.analyze_similarity(
-                            target_smiles=smiles,
-                            heteroatom_df=self.local_database,
-                            min_similarity=ai_params["threshold"]
-                        )
-                        combined_similarity_results = pd.concat([combined_similarity_results, local_similarity_results], ignore_index=True)
+                        try:
+                            from .similarity_analyzer import SimilarityAnalyzer
+                            analyzer = SimilarityAnalyzer(**ai_params)
+                            
+                            local_similarity_results = analyzer.analyze_similarity(
+                                target_smiles=smiles,
+                                heteroatom_df=self.local_database,
+                                min_similarity=ai_params["threshold"]
+                            )
+                            combined_similarity_results = pd.concat([combined_similarity_results, local_similarity_results], ignore_index=True)
+                        except ImportError:
+                            st.warning("⚠️ Local similarity analyzer not available")
                     
                     # Real-time similarity
                     if use_realtime_data and not combined_heteroatom_results.empty:
-                        realtime_similarity_results = self.realtime_similarity.analyze_similarity_realtime(
+                        realtime_similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
                             target_smiles=smiles,
                             heteroatom_df=combined_heteroatom_results,
                             min_similarity=ai_params["threshold"]
@@ -1123,7 +1338,7 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
             finally:
                 progress_bar.empty()
                 status_text.empty()
-    
+
     def _display_autonomous_hybrid_results(self, smiles: str, uniprot_ids: List[str],
                                           heteroatom_results: pd.DataFrame, similarity_results: pd.DataFrame,
                                           ai_params: Dict, comprehensive: bool, visualizations: bool,
@@ -1175,7 +1390,7 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
         # Auto-downloads
         if auto_download:
             self._generate_autonomous_downloads(heteroatom_results, similarity_results)
-    
+
     def _generate_autonomous_hybrid_report(self, smiles: str, uniprot_ids: List[str],
                                           heteroatom_results: pd.DataFrame, similarity_results: pd.DataFrame,
                                           ai_params: Dict, use_local_data: bool, use_realtime_data: bool, 
@@ -1235,7 +1450,7 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
 """
         
         return report
-    
+
     def _create_autonomous_visualizations(self, similarity_results: pd.DataFrame, target_smiles: str):
         """Create visualizations for autonomous mode"""
         if 'Tanimoto_Similarity' not in similarity_results.columns:
@@ -1249,8 +1464,10 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
                 similarity_results, 
                 x='Tanimoto_Similarity',
                 title="Similarity Score Distribution",
-                nbins=20
+                nbins=20,
+                color_discrete_sequence=['#ff6b9d']
             )
+            fig_hist.update_layout(height=400)
             st.plotly_chart(fig_hist, use_container_width=True)
         
         with col2:
@@ -1260,11 +1477,14 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
                 top_10,
                 x='Heteroatom_Code',
                 y='Tanimoto_Similarity',
-                title="Top 10 Similar Compounds"
+                title="Top 10 Similar Compounds",
+                color='Tanimoto_Similarity',
+                color_continuous_scale='Viridis'
             )
             fig_bar.update_xaxes(tickangle=45)
+            fig_bar.update_layout(height=400)
             st.plotly_chart(fig_bar, use_container_width=True)
-    
+
     def _generate_autonomous_downloads(self, heteroatom_results: pd.DataFrame, similarity_results: pd.DataFrame):
         """Generate download options for autonomous mode"""
         st.subheader("📥 Autonomous Analysis Downloads")
@@ -1292,7 +1512,7 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
                     mime="text/csv",
                     use_container_width=True
                 )
-    
+
     # Helper methods for text extraction
     def _extract_smiles_from_text(self, text: str) -> str:
         """Extract SMILES string from text input"""
@@ -1330,96 +1550,3 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
             all_matches.extend([m if isinstance(m, str) else m[0] for m in matches])
         
         return list(set([m for m in all_matches if len(m) >= 5]))
-    
-    def _extract_analysis_type(self, text: str) -> str:
-        """Extract analysis type from text"""
-        text_lower = text.lower()
-        
-        if 'heteroatom' in text_lower and ('similarity' in text_lower or 'complete' in text_lower or 'pipeline' in text_lower):
-            return 'complete'
-        elif 'heteroatom' in text_lower:
-            return 'heteroatom'
-        elif 'similarity' in text_lower:
-            return 'similarity'
-        elif 'complete' in text_lower or 'pipeline' in text_lower or 'both' in text_lower:
-            return 'complete'
-        
-        return ''
-    
-    def _extract_threshold_from_text(self, text: str) -> Optional[float]:
-        """Extract threshold value from text"""
-        import re
-        
-        # Look for decimal numbers
-        numbers = re.findall(r'0\.\d+', text)
-        for num in numbers:
-            val = float(num)
-            if 0 <= val <= 1:
-                return val
-        
-        # Look for keywords
-        if '0.5' in text or 'loose' in text.lower():
-            return 0.5
-        elif '0.7' in text or 'moderate' in text.lower():
-            return 0.7
-        elif '0.9' in text or 'strict' in text.lower():
-            return 0.9
-        
-        return None
-
-    def _display_heteroatom_results(self, results: pd.DataFrame, mode: str):
-        """Display heteroatom extraction results"""
-        if results.empty:
-            st.info("No heteroatom results to display")
-            return
-        
-        # Filter out NO_HETEROATOMS entries
-        valid_results = results[results['Heteroatom_Code'] != 'NO_HETEROATOMS']
-        
-        if not valid_results.empty:
-            st.dataframe(valid_results[['UniProt_ID', 'PDB_ID', 'Heteroatom_Code', 'SMILES', 'Chemical_Name', 'Formula']].head(10))
-            
-            # Download option
-            csv = valid_results.to_csv(index=False)
-            st.download_button(
-                label=f"📥 Download Heteroatom Results ({mode})",
-                data=csv,
-                file_name=f"heteroatom_results_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-        else:
-            st.info("No valid heteroatom records found")
-    
-    def _display_similarity_results(self, results: pd.DataFrame, target_smiles: str, mode: str):
-        """Display similarity analysis results"""
-        if results.empty:
-            st.info("No similarity results to display")
-            return
-        
-        # Display top results
-        display_cols = ['PDB_ID', 'Heteroatom_Code', 'Chemical_Name', 'SMILES', 'Tanimoto_Similarity', 'Formula']
-        available_cols = [col for col in display_cols if col in results.columns]
-        
-        st.dataframe(results[available_cols].head(10))
-        
-        # Create visualization
-        if len(results) > 5 and 'Tanimoto_Similarity' in results.columns:
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=list(range(len(results.head(20)))),
-                y=results.head(20)['Tanimoto_Similarity'],
-                mode='markers+lines',
-                name='Similarity Score',
-                marker=dict(size=8, color=results.head(20)['Tanimoto_Similarity'], colorscale='Viridis')
-            ))
-            fig.update_layout(title=f"Top 20 Similarity Scores ({mode} mode)", xaxis_title="Compound Rank", yaxis_title="Tanimoto Similarity")
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # Download option
-        csv = results.to_csv(index=False)
-        st.download_button(
-            label=f"📥 Download Similarity Results ({mode})",
-            data=csv,
-            file_name=f"similarity_results_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
-        )

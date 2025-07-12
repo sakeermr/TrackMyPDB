@@ -8,346 +8,466 @@ Licensed under MIT License - Open Source Project
 
 import requests
 import pandas as pd
-from tqdm import tqdm
+from typing import List, Dict, Set, Optional, Tuple
 import time
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tqdm import tqdm
+import logging
+from dataclasses import dataclass
 import streamlit as st
 
+@dataclass
+class HeteroatomData:
+    """Data class for heteroatom information"""
+    code: str
+    smiles: str
+    chemical_name: str
+    formula: str
+    status: str
+    chains: Set[str]
+    residue_numbers: Set[str]
+    atom_names: Set[str]
+    
+    def to_dict(self) -> Dict:
+        return {
+            'Heteroatom_Code': self.code,
+            'SMILES': self.smiles,
+            'Chemical_Name': self.chemical_name,
+            'Formula': self.formula,
+            'Status': self.status,
+            'Chains': ', '.join(sorted(self.chains)),
+            'Residue_Numbers': ', '.join(sorted(self.residue_numbers)),
+            'Atom_Count': len(self.atom_names)
+        }
 
-class HeteroatomExtractor:
+class OptimizedHeteroatomExtractor:
     """
-    A comprehensive tool for extracting heteroatoms from PDB structures
+    Optimized real-time heteroatom extractor for Manual Mode
+    Integrates with Streamlit interface and provides efficient PDB processing
     """
     
     def __init__(self):
-        # PDBe API endpoint for best structure mappings
-        self.PDBe_BEST = "https://www.ebi.ac.uk/pdbe/api/mappings/best_structures"
-        self.failed_pdbs = []
-        self.all_records = []
+        self.pdbe_best_url = "https://www.ebi.ac.uk/pdbe/api/mappings/best_structures"
+        self.rcsb_download_url = "https://files.rcsb.org/download"
+        self.rcsb_chemcomp_url = "https://data.rcsb.org/rest/v1/core/chemcomp"
+        self.pubchem_url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound"
         
-    def get_pdbs_for_uniprot(self, uniprot):
-        """
-        Get PDB IDs for given UniProt ID from PDBe best mappings
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'TrackMyPDB/1.0 (Molecular Analysis Tool)'
+        })
         
-        Args:
-            uniprot (str): UniProt ID
-            
-        Returns:
-            list: List of PDB IDs
+        # Cache for optimization
+        self.pdb_cache = {}
+        self.smiles_cache = {}
+        
+    def extract_heteroatoms_batch(self, uniprot_ids: List[str], 
+                                progress_callback=None, 
+                                max_workers: int = 5) -> pd.DataFrame:
         """
-        try:
-            r = requests.get(f"{self.PDBe_BEST}/{uniprot}", timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            structs = []
-            
-            if isinstance(data, dict) and uniprot in data:
-                val = data[uniprot]
-                if isinstance(val, dict):
-                    structs = val.get("best_structures", [])
-                elif isinstance(val, list):
-                    structs = val
-            elif isinstance(data, list):
-                structs = data
+        Extract heteroatoms from multiple UniProt IDs with optimized batch processing
+        Designed for Streamlit integration with progress tracking
+        """
+        all_records = []
+        failed_pdbs = []
+        total_heteroatoms = 0
+        
+        # Progress tracking for Streamlit
+        if progress_callback is None and 'streamlit' in str(type(st)):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+        else:
+            progress_bar = None
+            status_text = None
+        
+        total_steps = len(uniprot_ids)
+        current_step = 0
+        
+        for uniprot_id in uniprot_ids:
+            try:
+                if status_text:
+                    status_text.text(f"🔍 Processing {uniprot_id}...")
                 
-            return sorted({s["pdb_id"].upper() for s in structs if s.get("pdb_id")})
-        except Exception as e:
-            st.error(f"Error fetching PDBs for {uniprot}: {e}")
-            return []
-
-    def download_pdb(self, pdb):
-        """
-        Download PDB file and return lines
+                # Get PDB structures for UniProt ID
+                pdb_ids = self._get_pdbs_for_uniprot(uniprot_id)
+                
+                if not pdb_ids:
+                    all_records.append({
+                        "UniProt_ID": uniprot_id,
+                        "PDB_ID": "NO_STRUCTURES",
+                        "Heteroatom_Code": "NO_STRUCTURES",
+                        "SMILES": "",
+                        "Chemical_Name": "",
+                        "Formula": "",
+                        "Status": "no_structures_found",
+                        "Chains": "",
+                        "Residue_Numbers": "",
+                        "Atom_Count": 0
+                    })
+                    continue
+                
+                # Process PDB structures with threading
+                uniprot_records = self._process_pdbs_parallel(
+                    uniprot_id, pdb_ids, max_workers=max_workers
+                )
+                
+                all_records.extend(uniprot_records)
+                heteroatom_count = len([r for r in uniprot_records 
+                                      if r['Heteroatom_Code'] not in ['NO_HETEROATOMS', 'NO_STRUCTURES']])
+                total_heteroatoms += heteroatom_count
+                
+                current_step += 1
+                if progress_bar:
+                    progress_bar.progress(current_step / total_steps)
+                
+            except Exception as e:
+                logging.error(f"Error processing UniProt {uniprot_id}: {str(e)}")
+                all_records.append({
+                    "UniProt_ID": uniprot_id,
+                    "PDB_ID": "ERROR",
+                    "Heteroatom_Code": "ERROR",
+                    "SMILES": "",
+                    "Chemical_Name": "",
+                    "Formula": "",
+                    "Status": f"error_{str(e)[:20]}",
+                    "Chains": "",
+                    "Residue_Numbers": "",
+                    "Atom_Count": 0
+                })
         
-        Args:
-            pdb (str): PDB ID
-            
-        Returns:
-            list: List of lines from PDB file
-        """
-        try:
-            url = f"https://files.rcsb.org/download/{pdb}.pdb"
-            r = requests.get(url, timeout=30)
-            r.raise_for_status()
-            return r.text.splitlines()
-        except Exception as e:
-            st.warning(f"Error downloading {pdb}: {e}")
-            return []
-
-    def extract_all_heteroatoms(self, lines):
-        """
-        Extract ALL unique heteroatom codes from HETATM lines
+        # Clean up progress indicators
+        if progress_bar:
+            progress_bar.empty()
+        if status_text:
+            status_text.empty()
         
-        Args:
-            lines (list): PDB file lines
-            
-        Returns:
-            tuple: (heteroatom codes list, heteroatom details dict)
-        """
-        hets = set()
-        het_details = {}
-
-        for line in lines:
-            if line.startswith("HETATM"):
-                # Extract residue name (columns 18-20)
-                code = line[17:20].strip()
-                if code:  # Only add non-empty codes
-                    hets.add(code)
-
-                    # Extract additional info for context
-                    if code not in het_details:
-                        try:
-                            chain = line[21:22].strip()
-                            res_num = line[22:26].strip()
-                            atom_name = line[12:16].strip()
-                            het_details[code] = {
-                                'chains': set([chain]) if chain else set(),
-                                'residue_numbers': set([res_num]) if res_num else set(),
-                                'atom_names': set([atom_name]) if atom_name else set()
-                            }
-                        except:
-                            het_details[code] = {'chains': set(), 'residue_numbers': set(), 'atom_names': set()}
-                    else:
-                        try:
-                            chain = line[21:22].strip()
-                            res_num = line[22:26].strip()
-                            atom_name = line[12:16].strip()
-                            if chain:
-                                het_details[code]['chains'].add(chain)
-                            if res_num:
-                                het_details[code]['residue_numbers'].add(res_num)
-                            if atom_name:
-                                het_details[code]['atom_names'].add(atom_name)
-                        except:
-                            pass
-
-        return sorted(list(hets)), het_details
-
-    def fetch_smiles_rcsb(self, code):
-        """
-        Fetch SMILES from RCSB core chemcomp API
-        
-        Args:
-            code (str): Heteroatom code
-            
-        Returns:
-            dict: Chemical information including SMILES
-        """
-        max_retries = 3
+        return pd.DataFrame(all_records)
+    
+    def _get_pdbs_for_uniprot(self, uniprot_id: str, max_retries: int = 3) -> List[str]:
+        """Get PDB IDs for given UniProt ID with retry logic"""
         for attempt in range(max_retries):
             try:
-                url = f"https://data.rcsb.org/rest/v1/core/chemcomp/{code}"
-                r = requests.get(url, timeout=15)
-
-                if r.status_code == 200:
-                    data = r.json()
-                    smiles = data.get("rcsb_chem_comp_descriptor", {}).get("smiles", "")
-                    chem_name = data.get("chem_comp", {}).get("name", "")
-                    formula = data.get("chem_comp", {}).get("formula", "")
-                    return {
-                        'smiles': smiles,
-                        'name': chem_name,
-                        'formula': formula,
-                        'status': 'success' if smiles else 'no_smiles'
-                    }
-                elif r.status_code == 404:
-                    return {'smiles': '', 'name': '', 'formula': '', 'status': 'not_in_rcsb'}
-                else:
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                        continue
-                    return {'smiles': '', 'name': '', 'formula': '', 'status': f'http_{r.status_code}'}
-
-            except requests.exceptions.Timeout:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                return {'smiles': '', 'name': '', 'formula': '', 'status': 'timeout'}
+                response = self.session.get(
+                    f"{self.pdbe_best_url}/{uniprot_id}", 
+                    timeout=10
+                )
+                response.raise_for_status()
+                
+                data = response.json()
+                structures = []
+                
+                if isinstance(data, dict) and uniprot_id in data:
+                    val = data[uniprot_id]
+                    if isinstance(val, dict):
+                        structures = val.get("best_structures", [])
+                    elif isinstance(val, list):
+                        structures = val
+                elif isinstance(data, list):
+                    structures = data
+                
+                pdb_ids = sorted({s["pdb_id"].upper() for s in structures if s.get("pdb_id")})
+                return pdb_ids[:10]  # Limit to top 10 for efficiency
+                
             except Exception as e:
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                     continue
-                return {'smiles': '', 'name': '', 'formula': '', 'status': f'error_{str(e)[:20]}'}
-
-        return {'smiles': '', 'name': '', 'formula': '', 'status': 'failed_all_retries'}
-
-    def fetch_from_pubchem(self, code):
-        """
-        Try to fetch SMILES from PubChem as backup
+                logging.warning(f"Failed to fetch PDBs for {uniprot_id}: {str(e)}")
+                return []
         
-        Args:
-            code (str): Heteroatom code
+        return []
+    
+    def _process_pdbs_parallel(self, uniprot_id: str, pdb_ids: List[str], 
+                              max_workers: int = 5) -> List[Dict]:
+        """Process multiple PDB files in parallel"""
+        all_records = []
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all PDB processing tasks
+            future_to_pdb = {
+                executor.submit(self._process_single_pdb, uniprot_id, pdb_id): pdb_id 
+                for pdb_id in pdb_ids
+            }
             
-        Returns:
-            str: SMILES string or empty string
-        """
+            # Collect results as they complete
+            for future in as_completed(future_to_pdb):
+                pdb_id = future_to_pdb[future]
+                try:
+                    pdb_records = future.result(timeout=30)
+                    all_records.extend(pdb_records)
+                except Exception as e:
+                    logging.error(f"Error processing PDB {pdb_id}: {str(e)}")
+                    all_records.append({
+                        "UniProt_ID": uniprot_id,
+                        "PDB_ID": pdb_id,
+                        "Heteroatom_Code": "ERROR",
+                        "SMILES": "",
+                        "Chemical_Name": "",
+                        "Formula": "",
+                        "Status": f"processing_error",
+                        "Chains": "",
+                        "Residue_Numbers": "",
+                        "Atom_Count": 0
+                    })
+        
+        return all_records
+    
+    def _process_single_pdb(self, uniprot_id: str, pdb_id: str) -> List[Dict]:
+        """Process a single PDB file and extract heteroatoms"""
         try:
-            # Try by compound name
-            url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{code}/property/CanonicalSMILES/JSON"
-            r = requests.get(url, timeout=10)
-            if r.status_code == 200:
-                data = r.json()
-                props = data.get("PropertyTable", {}).get("Properties", [])
-                if props and len(props) > 0:
-                    return props[0].get("CanonicalSMILES", "")
-        except:
-            pass
-        return ""
-
-    def process_pdb_heteroatoms(self, pdb_id, uniprot_id, lines):
-        """
-        Process all heteroatoms from a single PDB
-        
-        Args:
-            pdb_id (str): PDB ID
-            uniprot_id (str): UniProt ID
-            lines (list): PDB file lines
+            # Download PDB file
+            pdb_lines = self._download_pdb(pdb_id)
+            if not pdb_lines:
+                return [{
+                    "UniProt_ID": uniprot_id,
+                    "PDB_ID": pdb_id,
+                    "Heteroatom_Code": "DOWNLOAD_FAILED",
+                    "SMILES": "",
+                    "Chemical_Name": "",
+                    "Formula": "",
+                    "Status": "download_failed",
+                    "Chains": "",
+                    "Residue_Numbers": "",
+                    "Atom_Count": 0
+                }]
             
-        Returns:
-            list: List of heteroatom records
-        """
-        codes, het_details = self.extract_all_heteroatoms(lines)
-        results = []
-
-        if not codes:
-            results.append({
+            # Extract heteroatoms
+            heteroatom_data = self._extract_heteroatoms_from_lines(pdb_lines)
+            
+            if not heteroatom_data:
+                return [{
+                    "UniProt_ID": uniprot_id,
+                    "PDB_ID": pdb_id,
+                    "Heteroatom_Code": "NO_HETEROATOMS",
+                    "SMILES": "",
+                    "Chemical_Name": "",
+                    "Formula": "",
+                    "Status": "no_heteroatoms",
+                    "Chains": "",
+                    "Residue_Numbers": "",
+                    "Atom_Count": 0
+                }]
+            
+            # Process each heteroatom
+            records = []
+            for het_code, het_info in heteroatom_data.items():
+                # Get SMILES and chemical info
+                smiles_data = self._get_smiles_for_heteroatom(het_code)
+                
+                record = {
+                    "UniProt_ID": uniprot_id,
+                    "PDB_ID": pdb_id,
+                    **het_info.to_dict(),
+                    **smiles_data
+                }
+                records.append(record)
+                
+                # Small delay to be respectful to APIs
+                time.sleep(0.1)
+            
+            return records
+            
+        except Exception as e:
+            logging.error(f"Error processing PDB {pdb_id}: {str(e)}")
+            return [{
                 "UniProt_ID": uniprot_id,
                 "PDB_ID": pdb_id,
-                "Heteroatom_Code": "NO_HETEROATOMS",
+                "Heteroatom_Code": "ERROR",
                 "SMILES": "",
                 "Chemical_Name": "",
                 "Formula": "",
-                "Status": "no_heteroatoms",
+                "Status": f"error_{str(e)[:20]}",
                 "Chains": "",
                 "Residue_Numbers": "",
                 "Atom_Count": 0
-            })
-            return results
-
-        st.info(f"Processing {len(codes)} heteroatoms from {pdb_id}: {', '.join(codes)}")
-
-        for code in codes:
-            # Get detailed info
-            details = het_details.get(code, {})
-            chains = ', '.join(sorted(details.get('chains', set())))
-            res_nums = ', '.join(sorted(details.get('residue_numbers', set())))
-            atom_count = len(details.get('atom_names', set()))
-
-            # Fetch SMILES from RCSB
-            rcsb_data = self.fetch_smiles_rcsb(code)
-            smiles = rcsb_data['smiles']
-
-            # If no SMILES from RCSB, try PubChem
-            if not smiles:
-                pubchem_smiles = self.fetch_from_pubchem(code)
-                if pubchem_smiles:
-                    smiles = pubchem_smiles
-                    rcsb_data['status'] = f"{rcsb_data['status']}_pubchem_found"
-
-            results.append({
-                "UniProt_ID": uniprot_id,
-                "PDB_ID": pdb_id,
-                "Heteroatom_Code": code,
-                "SMILES": smiles,
-                "Chemical_Name": rcsb_data['name'],
-                "Formula": rcsb_data['formula'],
-                "Status": rcsb_data['status'],
-                "Chains": chains,
-                "Residue_Numbers": res_nums,
-                "Atom_Count": atom_count
-            })
-
-            # Small delay to be respectful to APIs
-            time.sleep(0.2)
-
-        return results
-
-    def extract_heteroatoms(self, uniprot_ids, progress_callback=None):
-        """
-        Main function to extract heteroatoms from UniProt IDs
+            }]
+    
+    def _download_pdb(self, pdb_id: str) -> List[str]:
+        """Download PDB file with caching"""
+        if pdb_id in self.pdb_cache:
+            return self.pdb_cache[pdb_id]
         
-        Args:
-            uniprot_ids (list): List of UniProt IDs
-            progress_callback (function): Optional callback for progress updates
+        try:
+            url = f"{self.rcsb_download_url}/{pdb_id}.pdb"
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
             
-        Returns:
-            pd.DataFrame: Complete heteroatom data
-        """
-        self.all_records = []
-        self.failed_pdbs = []
-        total_heteroatoms = 0
-
-        total_progress = 0
-        total_pdbs = 0
+            lines = response.text.splitlines()
+            self.pdb_cache[pdb_id] = lines  # Cache for reuse
+            return lines
+            
+        except Exception as e:
+            logging.error(f"Error downloading {pdb_id}: {str(e)}")
+            return []
+    
+    def _extract_heteroatoms_from_lines(self, lines: List[str]) -> Dict[str, HeteroatomData]:
+        """Extract all heteroatoms from PDB lines"""
+        heteroatoms = {}
         
-        # First, count total PDBs for progress tracking
-        for up in uniprot_ids:
-            pdbs = self.get_pdbs_for_uniprot(up)
-            total_pdbs += len(pdbs)
-
-        current_progress = 0
-
-        for up in uniprot_ids:
-            pdbs = self.get_pdbs_for_uniprot(up)
-            st.info(f"Found {len(pdbs)} PDB structures for {up}")
-
-            for pdb in pdbs:
-                try:
-                    if progress_callback:
-                        progress_callback(current_progress / total_pdbs if total_pdbs > 0 else 0, 
-                                       f"Processing {pdb} for {up}")
+        for line in lines:
+            if not line.startswith("HETATM"):
+                continue
+                
+            try:
+                # Extract heteroatom code (columns 18-20, 1-indexed)
+                het_code = line[17:20].strip()
+                if not het_code:
+                    continue
+                
+                # Get additional info
+                chain = line[21:22].strip()
+                res_num = line[22:26].strip()
+                atom_name = line[12:16].strip()
+                
+                if het_code not in heteroatoms:
+                    heteroatoms[het_code] = HeteroatomData(
+                        code=het_code,
+                        smiles="",  # Will be filled later
+                        chemical_name="",
+                        formula="",
+                        status="",
+                        chains=set(),
+                        residue_numbers=set(),
+                        atom_names=set()
+                    )
+                
+                # Add details
+                if chain:
+                    heteroatoms[het_code].chains.add(chain)
+                if res_num:
+                    heteroatoms[het_code].residue_numbers.add(res_num)
+                if atom_name:
+                    heteroatoms[het_code].atom_names.add(atom_name)
                     
-                    # Download PDB file
-                    lines = self.download_pdb(pdb)
-                    if not lines:
-                        self.failed_pdbs.append(pdb)
-                        current_progress += 1
+            except (IndexError, ValueError):
+                continue
+        
+        return heteroatoms
+    
+    def _get_smiles_for_heteroatom(self, het_code: str) -> Dict[str, str]:
+        """Get SMILES and chemical info for heteroatom with caching"""
+        if het_code in self.smiles_cache:
+            return self.smiles_cache[het_code]
+        
+        # Try RCSB first
+        rcsb_data = self._fetch_smiles_rcsb(het_code)
+        
+        # If no SMILES from RCSB, try PubChem
+        if not rcsb_data.get('SMILES'):
+            pubchem_smiles = self._fetch_smiles_pubchem(het_code)
+            if pubchem_smiles:
+                rcsb_data['SMILES'] = pubchem_smiles
+                rcsb_data['Status'] = f"{rcsb_data.get('Status', 'unknown')}_pubchem_found"
+        
+        # Cache the result
+        self.smiles_cache[het_code] = rcsb_data
+        return rcsb_data
+    
+    def _fetch_smiles_rcsb(self, het_code: str, max_retries: int = 2) -> Dict[str, str]:
+        """Fetch SMILES from RCSB with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                url = f"{self.rcsb_chemcomp_url}/{het_code}"
+                response = self.session.get(url, timeout=10)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    smiles = data.get("rcsb_chem_comp_descriptor", {}).get("smiles", "")
+                    chemical_name = data.get("chem_comp", {}).get("name", "")
+                    formula = data.get("chem_comp", {}).get("formula", "")
+                    
+                    return {
+                        'SMILES': smiles,
+                        'Chemical_Name': chemical_name,
+                        'Formula': formula,
+                        'Status': 'success' if smiles else 'no_smiles_rcsb'
+                    }
+                elif response.status_code == 404:
+                    return {
+                        'SMILES': '',
+                        'Chemical_Name': '',
+                        'Formula': '',
+                        'Status': 'not_in_rcsb'
+                    }
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
                         continue
-
-                    # Process all heteroatoms
-                    pdb_results = self.process_pdb_heteroatoms(pdb, up, lines)
-                    self.all_records.extend(pdb_results)
-
-                    # Count heteroatoms found
-                    heteroatom_count = len([r for r in pdb_results if r['Heteroatom_Code'] != 'NO_HETEROATOMS'])
-                    total_heteroatoms += heteroatom_count
-
-                except Exception as e:
-                    st.error(f"Error processing {pdb}: {e}")
-                    self.failed_pdbs.append(pdb)
+                    return {
+                        'SMILES': '',
+                        'Chemical_Name': '',
+                        'Formula': '',
+                        'Status': f'http_error_{response.status_code}'
+                    }
                     
-                current_progress += 1
-
-        # Create comprehensive DataFrame with required columns
-        df = pd.DataFrame(self.all_records)
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                return {
+                    'SMILES': '',
+                    'Chemical_Name': '',
+                    'Formula': '',
+                    'Status': f'error_{str(e)[:10]}'
+                }
         
-        # Ensure all required columns exist
-        required_columns = [
-            'UniProt_ID', 'PDB_ID', 'Heteroatom_Code', 'SMILES', 
-            'Chemical_Name', 'Formula', 'Status', 'Chains', 
-            'Residue_Numbers', 'Atom_Count'
-        ]
-        
-        # Add any missing columns with empty values
-        for col in required_columns:
-            if col not in df.columns:
-                df[col] = ''
-        
-        # Display comprehensive analysis
-        if not df.empty:
-            st.success("Heteroatom extraction completed!")
-            st.write(f"**Total records:** {len(df)}")
-            st.write(f"**PDB structures processed:** {df['PDB_ID'].nunique()}")
-            st.write(f"**Total unique heteroatoms found:** {df['Heteroatom_Code'].nunique()}")
-            st.write(f"**Records with SMILES:** {len(df[df['SMILES'] != ''])}")
+        return {
+            'SMILES': '',
+            'Chemical_Name': '',
+            'Formula': '',
+            'Status': 'failed_all_retries'
+        }
+    
+    def _fetch_smiles_pubchem(self, het_code: str) -> str:
+        """Fetch SMILES from PubChem as backup"""
+        try:
+            url = f"{self.pubchem_url}/name/{het_code}/property/CanonicalSMILES/JSON"
+            response = self.session.get(url, timeout=8)
             
-            if self.failed_pdbs:
-                st.warning(f"**Failed PDB downloads:** {len(self.failed_pdbs)}")
-
-            # Show status breakdown
-            st.subheader("Status Breakdown")
-            status_counts = df['Status'].value_counts()
-            st.write(status_counts)
-
-        return df
+            if response.status_code == 200:
+                data = response.json()
+                props = data.get("PropertyTable", {}).get("Properties", [])
+                if props and len(props) > 0:
+                    return props[0].get("CanonicalSMILES", "")
+        except Exception:
+            pass
+        
+        return ""
+    
+    def extract_heteroatoms_realtime_optimized(self, uniprot_ids: List[str]) -> pd.DataFrame:
+        """
+        Optimized entry point for real-time heteroatom extraction
+        Used by the Manual Mode interface
+        """
+        if not uniprot_ids:
+            return pd.DataFrame()
+        
+        # Show progress in Streamlit
+        with st.spinner(f"🔍 Extracting heteroatoms from {len(uniprot_ids)} UniProt IDs..."):
+            results_df = self.extract_heteroatoms_batch(
+                uniprot_ids, 
+                max_workers=3  # Conservative for stability
+            )
+        
+        # Display summary
+        if not results_df.empty:
+            valid_results = results_df[
+                ~results_df['Heteroatom_Code'].isin(['NO_HETEROATOMS', 'NO_STRUCTURES', 'ERROR'])
+            ]
+            
+            if not valid_results.empty:
+                st.success(f"✅ Successfully extracted {len(valid_results)} heteroatom records!")
+                
+                # Show quick stats
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("🧪 Unique Heteroatoms", valid_results['Heteroatom_Code'].nunique())
+                with col2:
+                    st.metric("✅ With SMILES", len(valid_results[valid_results['SMILES'] != '']))
+                with col3:
+                    st.metric("🏗️ PDB Structures", valid_results['PDB_ID'].nunique())
+            else:
+                st.warning("⚠️ No valid heteroatoms found in the specified structures")
+        
+        return results_df
