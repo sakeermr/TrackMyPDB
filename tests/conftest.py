@@ -13,9 +13,9 @@ mock_streamlit.session_state = MagicMock()
 mock_streamlit.session_state.chat_history = []
 sys.modules['streamlit'] = mock_streamlit
 
-from backend.agent_core import TrackMyPDBAgent
-from backend.heteroatom_extractor import HeteroatomExtractor
+from backend.heteroatom_extractor import OptimizedHeteroatomExtractor
 from backend.similarity_analyzer import SimilarityAnalyzer
+from backend.agent_core import TrackMyPDBAgent
 from backend.nl_interface import NaturalLanguageInterface
 
 @pytest.fixture
@@ -23,8 +23,18 @@ def agent():
     return TrackMyPDBAgent()
 
 @pytest.fixture
+def sample_data():
+    """Sample data for testing"""
+    return {
+        'uniprot_ids': ['P11511', 'P56524'],
+        'pdb_ids': ['3EQM', '4F2W'],
+        'heteroatom_codes': ['ASD', 'BCA']
+    }
+
+@pytest.fixture
 def heteroatom_extractor():
-    return HeteroatomExtractor()
+    """Create OptimizedHeteroatomExtractor instance for testing"""
+    return OptimizedHeteroatomExtractor()
 
 @pytest.fixture
 def similarity_analyzer():

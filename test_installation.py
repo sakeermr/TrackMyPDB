@@ -30,7 +30,8 @@ def test_import(module_name):
 def test_backend_imports():
     """Test backend module imports"""
     try:
-        from backend.heteroatom_extractor import HeteroatomExtractor
+        # Test heteroatom extractor
+        from backend.heteroatom_extractor import OptimizedHeteroatomExtractor
         from backend.similarity_analyzer import SimilarityAnalyzer
         from backend.agent_core import TrackMyPDBAgent
         from backend.nl_interface import NaturalLanguageInterface

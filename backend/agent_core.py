@@ -5,7 +5,7 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 import datetime
-from .heteroatom_extractor import HeteroatomExtractor
+from .heteroatom_extractor import OptimizedHeteroatomExtractor
 import streamlit as st
 
 # Import the new agentic layer
@@ -47,7 +47,7 @@ class AgentResponse:
 
 class TrackMyPDBAgent:
     def __init__(self):
-        self.heteroatom_extractor = HeteroatomExtractor()
+        self.heteroatom_extractor = OptimizedHeteroatomExtractor()
         # Initialize with default settings
         self.similarity_analyzer = SimilarityAnalyzer()
         self.query_history = []

@@ -1,15 +1,16 @@
 import pytest
-from backend.heteroatom_extractor import HeteroatomExtractor
+from backend.heteroatom_extractor import OptimizedHeteroatomExtractor
 import pandas as pd
 
 @pytest.fixture
-def extractor():
-    return HeteroatomExtractor()
+def heteroatom_extractor():
+    """Create OptimizedHeteroatomExtractor instance for testing"""
+    return OptimizedHeteroatomExtractor()
 
-def test_extract_heteroatoms(extractor):
+def test_extract_heteroatoms(heteroatom_extractor):
     # Test with a small list of UniProt IDs
     uniprot_ids = ["P11511"]  # Using a real UniProt ID from our sample data
-    result = extractor.extract_heteroatoms(uniprot_ids)
+    result = heteroatom_extractor.extract_heteroatoms(uniprot_ids)
     
     assert isinstance(result, pd.DataFrame)
     if not result.empty:
@@ -17,21 +18,21 @@ def test_extract_heteroatoms(extractor):
         assert 'PDB_ID' in result.columns
         assert 'Heteroatom_Code' in result.columns
 
-def test_get_pdbs_for_uniprot(extractor):
+def test_get_pdbs_for_uniprot(heteroatom_extractor):
     # Test PDB retrieval for a known UniProt ID
-    pdbs = extractor.get_pdbs_for_uniprot("P11511")
+    pdbs = heteroatom_extractor.get_pdbs_for_uniprot("P11511")
     assert isinstance(pdbs, list)
 
-def test_download_pdb(extractor):
+def test_download_pdb(heteroatom_extractor):
     # Test PDB file download
-    lines = extractor.download_pdb("3EQM")  # Using a known PDB ID from our data
+    lines = heteroatom_extractor.download_pdb("3EQM")  # Using a known PDB ID from our data
     assert isinstance(lines, list)
     if lines:
         assert any(line.startswith("HETATM") for line in lines)
 
-def test_fetch_smiles_rcsb(extractor):
+def test_fetch_smiles_rcsb(heteroatom_extractor):
     # Test SMILES fetching for a known heteroatom
-    result = extractor.fetch_smiles_rcsb("ASD")  # Using a known heteroatom code
+    result = heteroatom_extractor.fetch_smiles_rcsb("ASD")  # Using a known heteroatom code
     assert isinstance(result, dict)
     assert 'smiles' in result
     assert 'status' in result
