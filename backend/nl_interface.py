@@ -124,6 +124,10 @@ class OptimizedRealTimePDBExtractor:
         
         for line in hetatm_lines:
             try:
+                # Exclude water molecules early
+                if "HOH" in line[17:20]:
+                    continue
+                
                 # Extract residue name (columns 18-20, 1-indexed -> 17-20 in 0-indexed)
                 code = line[17:20].strip()
                 if not code:
@@ -689,6 +693,28 @@ class NaturalLanguageInterface:
             help="Select analysis stage with optimized processing"
         )
         
+        # Additional options for similarity analysis only
+        if analysis_stage == "🎯 Optimized Similarity Analysis Only":
+            st.info("📋 **Similarity Analysis Options:**")
+            similarity_data_source = st.radio(
+                "Choose data source for similarity analysis:",
+                [
+                    "📁 Upload heteroatom CSV file",
+                    "🔄 Use session data (from previous extraction)",
+                    "🌐 Use local database (if available)"
+                ]
+            )
+            
+            uploaded_file = None
+            if similarity_data_source == "📁 Upload heteroatom CSV file":
+                uploaded_file = st.file_uploader(
+                    "Upload CSV file with heteroatom data:",
+                    type=['csv'],
+                    help="Upload a CSV file containing heteroatom data with SMILES column"
+                )
+                if uploaded_file:
+                    st.success("✅ File uploaded successfully!")
+        
         # Execution Button with enhanced styling
         if st.button("🚀 Execute OPTIMIZED Real-Time Analysis", type="primary", use_container_width=True):
             # Update extractor settings
@@ -706,7 +732,7 @@ class NaturalLanguageInterface:
                 if not target_smiles.strip():
                     st.error("❌ Target SMILES required for optimized similarity analysis")
                     return
-                st.error("❌ Optimized similarity analysis requires heteroatom data first. Use Combined Pipeline instead.")
+                self._execute_optimized_similarity_only(target_smiles, similarity_data_source, uploaded_file, radius, n_bits, threshold)
                 
             else:  # Optimized Combined Pipeline
                 if not uniprot_input.strip() or not target_smiles.strip():
@@ -847,6 +873,11 @@ class NaturalLanguageInterface:
             
             if not results_df.empty:
                 st.success("✅ Optimized real-time heteroatom extraction completed!")
+                
+                # Store results in session state for future similarity analysis
+                st.session_state["heteroatom_results"] = results_df
+                st.info("💾 Results stored in session for future similarity analysis")
+                
                 self._display_heteroatom_results(results_df, "optimized-real-time")
                 
                 # Save results with timestamp
@@ -860,6 +891,134 @@ class NaturalLanguageInterface:
                 
         except Exception as e:
             st.error(f"❌ Optimized real-time heteroatom extraction failed: {str(e)}")
+
+    def _execute_optimized_similarity_only(self, target_smiles: str, data_source: str, uploaded_file: Any, radius: int, n_bits: int, threshold: float):
+        """Execute OPTIMIZED real-time similarity analysis only"""
+        st.info("🚀 Starting OPTIMIZED real-time similarity analysis...")
+        
+        try:
+            heteroatom_df = None
+            
+            # Load heteroatom data based on selected source
+            if data_source == "🔄 Use session data (from previous extraction)":
+                if "heteroatom_results" in st.session_state:
+                    heteroatom_df = st.session_state["heteroatom_results"]
+                    st.info(f"🔄 Using {len(heteroatom_df)} records from session data")
+                else:
+                    st.warning("⚠️ No session data found. Please perform heteroatom extraction first or upload a file.")
+                    st.info("💡 **Tip**: Run 'Optimized Heteroatom Extraction Only' first, then use session data for similarity analysis")
+                    return
+                    
+            elif data_source == "📁 Upload heteroatom CSV file" and uploaded_file:
+                try:
+                    heteroatom_df = pd.read_csv(uploaded_file)
+                    st.info(f"📁 Loaded {len(heteroatom_df)} records from uploaded file")
+                    
+                    # Validate required columns
+                    required_cols = ['SMILES', 'PDB_ID', 'Heteroatom_Code']
+                    missing_cols = [col for col in required_cols if col not in heteroatom_df.columns]
+                    if missing_cols:
+                        st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
+                        st.info("💡 **Required columns**: SMILES, PDB_ID, Heteroatom_Code")
+                        return
+                        
+                except Exception as e:
+                    st.error(f"❌ Error reading uploaded file: {str(e)}")
+                    return
+                    
+            elif data_source == "🌐 Use local database (if available)":
+                if not self.local_database.empty:
+                    heteroatom_df = self.local_database
+                    st.info(f"🌐 Using {len(heteroatom_df)} records from local database")
+                else:
+                    st.warning("⚠️ Local database not available")
+                    return
+            else:
+                st.warning("⚠️ Please select a valid data source and ensure all requirements are met")
+                return
+            
+            # Validate heteroatom data
+            if heteroatom_df is None or heteroatom_df.empty:
+                st.error("❌ No heteroatom data available for similarity analysis")
+                return
+                
+            # Check for valid SMILES data
+            valid_smiles_count = len(heteroatom_df[
+                (heteroatom_df['SMILES'].notna()) & 
+                (heteroatom_df['SMILES'] != '') & 
+                (heteroatom_df['Heteroatom_Code'] != 'NO_HETEROATOMS')
+            ])
+            
+            if valid_smiles_count == 0:
+                st.error("❌ No valid SMILES structures found in the data")
+                st.info("💡 **Note**: Make sure your data contains valid SMILES strings and heteroatom codes")
+                return
+            
+            st.success(f"✅ Found {valid_smiles_count} valid SMILES structures for analysis")
+            
+            # Configure similarity analyzer with optimized parameters
+            self.realtime_similarity.radius = radius
+            self.realtime_similarity.n_bits = n_bits
+            
+            # Perform optimized similarity analysis
+            with st.spinner("🧮 Performing optimized molecular similarity analysis..."):
+                similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
+                    target_smiles=target_smiles,
+                    heteroatom_df=heteroatom_df,
+                    min_similarity=threshold,
+                    top_n=100  # Get top 100 results
+                )
+            
+            if not similarity_results.empty:
+                st.success(f"✅ Optimized similarity analysis completed!")
+                st.success(f"🎯 Found {len(similarity_results)} similar compounds above threshold {threshold}")
+                
+                # Display comprehensive results
+                self._display_similarity_results(similarity_results, target_smiles, "optimized-similarity-only")
+                
+                # Store results in session state for potential reuse
+                st.session_state["similarity_results"] = similarity_results
+                
+                # Auto-save results with timestamp
+                timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"optimized_similarity_only_{timestamp}.csv"
+                similarity_results.to_csv(filename, index=False)
+                st.success(f"💾 Results automatically saved to: {filename}")
+                
+                # Additional analysis insights
+                if len(similarity_results) > 10:
+                    st.subheader("📊 Analysis Insights")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        high_similarity = len(similarity_results[similarity_results['Tanimoto_Similarity'] >= 0.8])
+                        st.metric("🔥 High Similarity (≥0.8)", high_similarity)
+                    
+                    with col2:
+                        unique_pdbs = similarity_results['PDB_ID'].nunique()
+                        st.metric("🏗️ Unique PDB Structures", unique_pdbs)
+                    
+                    with col3:
+                        avg_similarity = similarity_results['Tanimoto_Similarity'].mean()
+                        st.metric("📈 Average Similarity", f"{avg_similarity:.3f}")
+                
+            else:
+                st.warning(f"⚠️ No similar compounds found above threshold {threshold}")
+                st.info("💡 **Suggestions**:")
+                st.info("- Try lowering the similarity threshold")
+                st.info("- Verify your target SMILES structure")
+                st.info("- Check if the heteroatom data contains relevant compounds")
+                
+        except ImportError:
+            st.error("❌ RDKit not available for similarity analysis")
+            st.info("💡 **Solution**: Install RDKit using: `pip install rdkit`")
+            
+        except Exception as e:
+            st.error(f"❌ Optimized similarity analysis failed: {str(e)}")
+            st.info("💡 **Troubleshooting**:")
+            st.info("- Verify your target SMILES is valid")
+            st.info("- Check that your data file has the correct format")
+            st.info("- Ensure the data contains valid SMILES structures")
 
     def _execute_optimized_combined_pipeline(self, uniprot_input: str, target_smiles: str,
                                           radius: int, n_bits: int, threshold: float, 
