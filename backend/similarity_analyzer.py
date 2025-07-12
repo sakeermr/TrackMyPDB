@@ -76,20 +76,65 @@ class SimilarityAnalyzer:
             return {}
 
     def smiles_to_fingerprint(self, smiles: str) -> Optional[Any]:
-        """Enhanced SMILES to fingerprint conversion with multiple fingerprint types"""
+        """Enhanced SMILES to fingerprint conversion with robust error handling"""
         try:
+            # Enhanced input validation
             if not smiles or pd.isna(smiles) or smiles.strip() == '':
                 return None
 
-            mol = Chem.MolFromSmiles(smiles.strip())
+            # Clean the SMILES string
+            cleaned_smiles = smiles.strip()
+            
+            # Basic SMILES validation - check for obvious issues
+            if len(cleaned_smiles) < 2:  # Too short to be valid
+                return None
+            
+            # Check for problematic characters that might cause graph issues
+            invalid_chars = ['*', '?', '!', '@', '#', '$', '%', '^', '&']
+            if any(char in cleaned_smiles for char in invalid_chars):
+                return None
+
+            # Create molecule with enhanced error handling
+            mol = Chem.MolFromSmiles(cleaned_smiles)
             if mol is None:
                 return None
 
-            # Generate fingerprint using selected method
-            fp = self.FINGERPRINT_TYPES[self.fp_type](mol, self.radius, self.n_bits)
-            return fp
+            # Additional molecule validation
+            try:
+                # Try to sanitize the molecule - this will catch graph issues
+                Chem.SanitizeMol(mol)
+                
+                # Check if molecule has atoms (prevents empty graph errors)
+                if mol.GetNumAtoms() == 0:
+                    return None
+                
+                # Check for disconnected fragments that might cause issues
+                if len(Chem.GetMolFrags(mol)) > 10:  # Too many fragments
+                    return None
+                    
+            except (Chem.AtomValenceException, Chem.KekulizeException, ValueError) as e:
+                # These specific RDKit exceptions often precede the "lowest priority node" error
+                return None
+
+            # Generate fingerprint using selected method with additional try-catch
+            try:
+                fp = self.FINGERPRINT_TYPES[self.fp_type](mol, self.radius, self.n_bits)
+                return fp
+            except Exception as fp_error:
+                # This catches the "lowest priority node" and similar graph algorithm errors
+                if "lowest priority node" in str(fp_error).lower():
+                    st.warning(f"⚠️ Graph algorithm error for SMILES '{cleaned_smiles}': Skipping molecule")
+                else:
+                    st.warning(f"⚠️ Fingerprint generation error for SMILES '{cleaned_smiles}': {fp_error}")
+                return None
+                
         except Exception as e:
-            st.warning(f"⚠️ Error processing SMILES '{smiles}': {e}")
+            # Catch any other unexpected errors
+            error_msg = str(e).lower()
+            if "lowest priority node" in error_msg:
+                st.warning(f"⚠️ Molecular graph error detected - skipping problematic SMILES: {smiles}")
+            else:
+                st.warning(f"⚠️ Error processing SMILES '{smiles}': {e}")
             return None
 
     def calculate_similarity(self, fp1: Any, fp2: Any) -> float:

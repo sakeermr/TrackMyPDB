@@ -20,6 +20,9 @@ import threading
 import math
 import json
 from datetime import datetime, timedelta
+from .async_api_handler import AsyncAPIHandler
+from .molecular_cache import MolecularCache
+from .performance_monitor import PerformanceMonitor
 
 class BatchStrategy(Enum):
     CONSERVATIVE = "conservative"
@@ -91,6 +94,11 @@ class AdaptiveBatchProcessor:
         # Resource monitoring
         self.monitor_system_resources = True
         self.resource_check_interval = 1.0  # seconds
+        
+        # API handler and caching
+        self.api_handler = AsyncAPIHandler()
+        self.cache = MolecularCache()
+        self.performance_monitor = PerformanceMonitor()
         
         logging.info(f"Initialized AdaptiveBatchProcessor with strategy: {strategy.value}")
     
@@ -453,6 +461,107 @@ class AdaptiveBatchProcessor:
             )
         
         return results
+    
+    async def process_batch(self, pdb_ids: List[str], analysis_type: str = 'similarity') -> Dict[str, Any]:
+        """Process a batch of PDB IDs with adaptive sizing"""
+        start_time = time.time()
+        
+        # Check cache first
+        cached_results = {}
+        uncached_ids = []
+        
+        for pdb_id in pdb_ids:
+            cached_result = self.cache.get(f"{pdb_id}_{analysis_type}")
+            if cached_result:
+                cached_results[pdb_id] = cached_result
+            else:
+                uncached_ids.append(pdb_id)
+        
+        # Process uncached IDs in adaptive batches
+        processed_results = {}
+        if uncached_ids:
+            batches = self._create_adaptive_batches(uncached_ids)
+            
+            for batch in batches:
+                batch_results = await self._process_single_batch(batch, analysis_type)
+                processed_results.update(batch_results)
+                
+                # Cache results
+                for pdb_id, result in batch_results.items():
+                    self.cache.set(f"{pdb_id}_{analysis_type}", result)
+        
+        # Combine results
+        all_results = {**cached_results, **processed_results}
+        
+        # Record performance metrics
+        processing_time = time.time() - start_time
+        self.performance_monitor.record_batch_processing(
+            len(pdb_ids), processing_time, len(cached_results)
+        )
+        
+        return {
+            'results': all_results,
+            'processing_time': processing_time,
+            'cache_hits': len(cached_results),
+            'total_processed': len(pdb_ids)
+        }
+    
+    def _create_adaptive_batches(self, pdb_ids: List[str]) -> List[List[str]]:
+        """Create batches with adaptive sizing based on system performance"""
+        batches = []
+        
+        # Adjust batch size based on recent performance
+        avg_response_time = self.performance_monitor.get_average_response_time()
+        if avg_response_time > 5.0:  # Slow responses
+            self.current_batch_size = self.batch_sizes['small']
+        elif avg_response_time < 2.0:  # Fast responses
+            self.current_batch_size = self.batch_sizes['large']
+        else:
+            self.current_batch_size = self.batch_sizes['medium']
+        
+        for i in range(0, len(pdb_ids), self.current_batch_size):
+            batch = pdb_ids[i:i + self.current_batch_size]
+            batches.append(batch)
+        
+        return batches
+    
+    async def _process_single_batch(self, pdb_ids: List[str], analysis_type: str) -> Dict[str, Any]:
+        """Process a single batch of PDB IDs"""
+        tasks = []
+        
+        for pdb_id in pdb_ids:
+            if analysis_type == 'similarity':
+                task = self.api_handler.get_similarity_data(pdb_id)
+            elif analysis_type == 'heteroatoms':
+                task = self.api_handler.get_heteroatom_data(pdb_id)
+            else:
+                task = self.api_handler.get_basic_data(pdb_id)
+            
+            tasks.append((pdb_id, task))
+        
+        # Execute tasks concurrently
+        results = {}
+        completed_tasks = await asyncio.gather(
+            *[task for _, task in tasks], 
+            return_exceptions=True
+        )
+        
+        for (pdb_id, _), result in zip(tasks, completed_tasks):
+            if isinstance(result, Exception):
+                results[pdb_id] = {'error': str(result)}
+            else:
+                results[pdb_id] = result
+        
+        return results
+    
+    def get_processing_statistics(self) -> Dict[str, Any]:
+        """Get current processing statistics"""
+        return {
+            'current_batch_size': self.current_batch_size,
+            'cache_hit_rate': self.cache.get_hit_rate(),
+            'average_response_time': self.performance_monitor.get_average_response_time(),
+            'total_requests_processed': self.performance_monitor.get_total_requests()
+        }
     
     def get_performance_summary(self) -> Dict[str, Any]:
         """Get performance summary and statistics"""
