@@ -1,0 +1,2 @@
+# Gemini API Configuration
+GEMINI_API_KEY = 'AIzaSyCErvD_C7fM99E8Q4Sze789p3q8JCYpyWA'

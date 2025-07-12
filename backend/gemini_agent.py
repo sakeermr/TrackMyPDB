@@ -7,10 +7,14 @@ import google.generativeai as genai
 import streamlit as st
 from typing import Dict, Any, List, Optional
 import json
+import os
+
+# Default API key storage location
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.py')
 
 class GeminiAgent:
-    def __init__(self, api_key: str):
-        genai.configure(api_key=api_key)
+    def __init__(self, api_key: str = None):
+        self._initialize_api_key(api_key)
         self.model = genai.GenerativeModel('gemini-pro')
         
         # Define system prompt for protein analysis
@@ -36,6 +40,41 @@ Format your responses as JSON with the following structure:
 """
         self.chat = self.model.start_chat(history=[])
         self._initialize_chat()
+
+    def _initialize_api_key(self, api_key: str = None):
+        """Initialize Gemini API key from provided key or config file"""
+        if api_key:
+            genai.configure(api_key=api_key)
+            self._save_api_key(api_key)  # Save for future use
+        else:
+            # Try to load from config file
+            try:
+                from . import config
+                if hasattr(config, 'GEMINI_API_KEY'):
+                    genai.configure(api_key=config.GEMINI_API_KEY)
+                else:
+                    raise ValueError("No API key found in config.py")
+            except ImportError:
+                self._create_config_file()
+                raise ValueError("Please provide a Gemini API key")
+
+    def _save_api_key(self, api_key: str):
+        """Save API key to config file"""
+        config_content = f"GEMINI_API_KEY = '{api_key}'\n"
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                f.write(config_content)
+        except Exception as e:
+            st.warning(f"Could not save API key to config file: {e}")
+
+    def _create_config_file(self):
+        """Create config file template if it doesn't exist"""
+        if not os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'w') as f:
+                    f.write("# Gemini API Configuration\nGEMINI_API_KEY = ''\n")
+            except Exception as e:
+                st.warning(f"Could not create config file: {e}")
 
     def _initialize_chat(self):
         """Initialize chat with system prompt"""
