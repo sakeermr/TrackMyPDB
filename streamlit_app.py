@@ -30,7 +30,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 # Import backend modules
 from backend.heteroatom_extractor import OptimizedHeteroatomExtractor
 from backend.agent_core import TrackMyPDBAgent
-from backend.nl_interface import NaturalLanguageInterface
+from backend.nl_interface import TrackMyPDBNLInterface as NaturalLanguageInterface
 
 try:
     from backend.similarity_analyzer import SimilarityAnalyzer

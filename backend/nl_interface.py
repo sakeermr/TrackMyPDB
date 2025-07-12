@@ -650,212 +650,244 @@ class OptimizedRealTimePDBExtractor:
         except Exception as e:
             st.error(f"❌ Error in optimized similarity analysis: {str(e)}")
             return pd.DataFrame()
+
+    def _smiles_to_fingerprint_optimized(self, smiles):
+        """Convert SMILES string to Morgan fingerprint - OPTIMIZED."""
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import rdMolDescriptors
+            
+            if not smiles or pd.isna(smiles) or smiles.strip() == '':
+                return None
+
+            mol = Chem.MolFromSmiles(smiles.strip())
+            if mol is None:
+                return None
+
+            # Generate Morgan fingerprint with optimized parameters
+            fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+                mol, self.radius, nBits=self.n_bits
+            )
+            return fp
+        except Exception:
+            return None
+
+    def _calculate_tanimoto_similarity_optimized(self, fp1, fp2):
+        """Calculate Tanimoto similarity between two fingerprints - OPTIMIZED."""
+        try:
+            from rdkit import DataStructs
+            
+            if fp1 is None or fp2 is None:
+                return 0.0
+
+            return DataStructs.TanimotoSimilarity(fp1, fp2)
+        except:
+            return 0.0
+
+class OptimizedRealTimeSimilarityAnalyzer:
+    """
+    OPTIMIZED Real-time molecular similarity analyzer for Manual Mode
+    """
     
-    def _display_heteroatom_results(self, results: pd.DataFrame, mode: str):
-        """Display heteroatom extraction results with compact horizontal formatting"""
-        if results.empty:
-            st.info("No heteroatom results to display")
-            return
-        
-        # Filter out NO_HETEROATOMS entries
-        valid_results = results[results['Heteroatom_Code'] != 'NO_HETEROATOMS']
-        
-        if not valid_results.empty:
-            # Compact horizontal metrics
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                st.metric("📊 Total", len(valid_results))
-            with col2:
-                st.metric("🧪 Unique", valid_results['Heteroatom_Code'].nunique())
-            with col3:
-                st.metric("✅ SMILES", len(valid_results[valid_results['SMILES'] != '']))
-            with col4:
-                st.metric("🏗️ PDBs", valid_results['PDB_ID'].nunique())
-            with col5:
-                success_rate = (len(valid_results[valid_results['SMILES'] != '']) / len(valid_results) * 100) if len(valid_results) > 0 else 0
-                st.metric("📈 Success", f"{success_rate:.0f}%")
+    def __init__(self, radius=2, n_bits=2048):
+        """Initialize the OPTIMIZED analyzer with fingerprint parameters."""
+        self.radius = radius
+        self.n_bits = n_bits
+        self.fingerprints = {}
+        self.valid_molecules = {}
+
+    def analyze_similarity_realtime_optimized(self, target_smiles, heteroatom_df, top_n=50, min_similarity=0.01):
+        """
+        Perform OPTIMIZED real-time similarity analysis - COMPACT DISPLAY
+        """
+        try:
+            # Import RDKit for real-time analysis
+            from rdkit import Chem
+            from rdkit.Chem import rdMolDescriptors, DataStructs
+            import numpy as np
             
-            # Compact table display - show only top 10 to prevent vertical expansion
-            st.subheader("🔝 Top 10 Results")
-            display_cols = ['PDB_ID', 'Heteroatom_Code', 'Chemical_Name', 'SMILES', 'Status']
-            available_cols = [col for col in display_cols if col in valid_results.columns]
-            st.dataframe(valid_results[available_cols].head(10), use_container_width=True, height=300)
+            # Compact header
+            st.info("🔄 OPTIMIZED molecular similarity analysis starting...")
             
-            # Compact download section - horizontal buttons
-            st.subheader("📥 Downloads")
+            # Filter out rows without SMILES - OPTIMIZED
+            valid_df = heteroatom_df[
+                (heteroatom_df['SMILES'].notna()) & 
+                (heteroatom_df['SMILES'] != '') & 
+                (heteroatom_df['Heteroatom_Code'] != 'NO_HETEROATOMS')
+            ].copy()
+            
+            # Compact status display
             col1, col2, col3 = st.columns(3)
             with col1:
-                csv = valid_results.to_csv(index=False)
-                st.download_button(
-                    label="📥 CSV",
-                    data=csv,
-                    file_name=f"heteroatom_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                st.info(f"📊 {len(valid_df)} valid SMILES")
             with col2:
-                json_data = valid_results.to_json(orient='records', indent=2)
-                st.download_button(
-                    label="📥 JSON",
-                    data=json_data,
-                    file_name=f"heteroatom_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
+                st.info(f"🎯 Target: {target_smiles[:15]}...")
             with col3:
-                summary = self._generate_heteroatom_summary(valid_results, mode)
-                st.download_button(
-                    label="📄 Summary",
-                    data=summary,
-                    file_name=f"heteroatom_summary_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-        else:
-            st.info("No valid heteroatom records found")
-    
-    def _display_similarity_results(self, results: pd.DataFrame, target_smiles: str, mode: str):
-        """Display similarity analysis results with compact horizontal layout"""
-        if results.empty:
-            st.info("No similarity results to display")
-            return
-        
-        # Compact horizontal metrics
-        if 'Tanimoto_Similarity' in results.columns:
-            col1, col2, col3, col4, col5 = st.columns(5)
+                st.info(f"⚡ Threshold: {min_similarity}")
+
+            if len(valid_df) == 0:
+                st.warning("⚠️ No valid SMILES found for similarity analysis")
+                return pd.DataFrame()
+
+            # Single progress container for compact display
+            progress_container = st.container()
+            with progress_container:
+                overall_progress = st.progress(0)
+                
+                # Horizontal status indicators
+                status_cols = st.columns(4)
+                with status_cols[0]:
+                    fp_status = st.empty()
+                with status_cols[1]:
+                    batch_counter = st.empty()
+                with status_cols[2]:
+                    similarity_status = st.empty()
+                with status_cols[3]:
+                    result_counter = st.empty()
+
+            # OPTIMIZED fingerprint computation
+            fp_status.info("🧮 Computing fingerprints...")
+            fingerprints = []
+            valid_indices = []
+            
+            batch_size = 50  # Process in batches for better performance
+            total_batches = (len(valid_df) + batch_size - 1) // batch_size
+            
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, len(valid_df))
+                batch = valid_df.iloc[start_idx:end_idx]
+                
+                batch_counter.metric("📦 Batch", f"{batch_idx + 1}/{total_batches}")
+                
+                for idx, (df_idx, row) in enumerate(batch.iterrows()):
+                    smiles = row['SMILES']
+                    fp = self._smiles_to_fingerprint_optimized(smiles)
+
+                    if fp is not None:
+                        fingerprints.append(fp)
+                        valid_indices.append(df_idx)
+
+                        # Store for later use
+                        key = f"{row['PDB_ID']}_{row['Heteroatom_Code']}"
+                        self.fingerprints[key] = fp
+                        self.valid_molecules[key] = {
+                            'smiles': smiles,
+                            'pdb_id': row['PDB_ID'],
+                            'ligand_code': row['Heteroatom_Code'],
+                            'chemical_name': row.get('Chemical_Name', ''),
+                            'formula': row.get('Formula', '')
+                        }
+                
+                # Update progress (first half)
+                progress = (batch_idx + 1) / (total_batches * 2)
+                overall_progress.progress(progress)
+
+            processed_df = valid_df.loc[valid_indices].copy()
+            processed_df['Fingerprint'] = fingerprints
+
+            fp_status.success(f"✅ Processed {len(processed_df)} molecules")
+            
+            # OPTIMIZED similarity calculation
+            similarity_status.info("🎯 Calculating similarities...")
+
+            # Generate target fingerprint
+            target_fp = self._smiles_to_fingerprint_optimized(target_smiles)
+            if target_fp is None:
+                raise ValueError(f"Invalid target SMILES: {target_smiles}")
+
+            # Calculate similarities in batches
+            similarities = []
+            
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, len(processed_df))
+                batch = processed_df.iloc[start_idx:end_idx]
+                
+                batch_similarities = []
+                for _, row in batch.iterrows():
+                    ligand_fp = row['Fingerprint']
+                    similarity = self._calculate_tanimoto_similarity_optimized(target_fp, ligand_fp)
+                    batch_similarities.append(similarity)
+                
+                similarities.extend(batch_similarities)
+                
+                # Update progress (second half)
+                progress = 0.5 + (batch_idx + 1) / (total_batches * 2)
+                overall_progress.progress(progress)
+                
+                # Update batch counter
+                batch_counter.metric("📦 Similarity Batch", f"{batch_idx + 1}/{total_batches}")
+
+            # Clear progress container
+            progress_container.empty()
+
+            # Add similarity scores to DataFrame
+            result_df = processed_df.copy()
+            result_df['Tanimoto_Similarity'] = similarities
+
+            # Filter by minimum similarity and sort - OPTIMIZED
+            result_df = result_df[result_df['Tanimoto_Similarity'] >= min_similarity]
+            result_df = result_df.sort_values('Tanimoto_Similarity', ascending=False)
+
+            # Return top results
+            top_results = result_df.head(top_n)
+
+            # Compact results summary
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("🎯 Matches", len(results))
+                st.metric("🏆 Found", len(result_df))
             with col2:
-                st.metric("🏆 Best", f"{results['Tanimoto_Similarity'].max():.3f}")
+                st.metric("🔝 Top", len(top_results))
             with col3:
-                st.metric("📊 Average", f"{results['Tanimoto_Similarity'].mean():.3f}")
+                avg_sim = result_df['Tanimoto_Similarity'].mean() if len(result_df) > 0 else 0
+                st.metric("📊 Avg Score", f"{avg_sim:.3f}")
             with col4:
-                st.metric("🧪 PDBs", results['PDB_ID'].nunique())
-            with col5:
-                high_sim = len(results[results['Tanimoto_Similarity'] >= 0.8])
-                st.metric("🔥 High (≥0.8)", high_sim)
-        
-        # Compact table display - show only top 15 to prevent vertical expansion
-        st.subheader("🔝 Top 15 Similar Compounds")
-        display_cols = ['PDB_ID', 'Heteroatom_Code', 'Chemical_Name', 'Tanimoto_Similarity', 'SMILES']
-        available_cols = [col for col in display_cols if col in results.columns]
-        st.dataframe(results[available_cols].head(15), use_container_width=True, height=400)
-        
-        # Compact visualizations - side by side to save vertical space
-        if len(results) > 5:
-            st.subheader("📊 Analysis Charts")
-            col1, col2 = st.columns(2)
+                max_sim = result_df['Tanimoto_Similarity'].max() if len(result_df) > 0 else 0
+                st.metric("🎯 Best Score", f"{max_sim:.3f}")
+
+            return top_results
             
-            with col1:
-                # Compact histogram
-                fig_hist = px.histogram(
-                    results.head(50),  # Limit data for performance
-                    x='Tanimoto_Similarity',
-                    title="Similarity Distribution",
-                    nbins=15,
-                    height=300,  # Reduced height
-                    color_discrete_sequence=['#00cc96']
-                )
-                fig_hist.update_layout(margin=dict(t=30, b=30, l=30, r=30))
-                st.plotly_chart(fig_hist, use_container_width=True)
+        except ImportError:
+            st.error("❌ RDKit not available for real-time similarity analysis")
+            st.info("💡 Please install RDKit: `pip install rdkit`")
+            return pd.DataFrame()
+        except Exception as e:
+            st.error(f"❌ Error in optimized similarity analysis: {str(e)}")
+            return pd.DataFrame()
+
+    def _smiles_to_fingerprint_optimized(self, smiles):
+        """Convert SMILES string to Morgan fingerprint - OPTIMIZED."""
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import rdMolDescriptors
             
-            with col2:
-                # Compact scatter plot
-                top_15 = results.head(15)
-                fig_scatter = go.Figure()
-                fig_scatter.add_trace(go.Scatter(
-                    x=list(range(len(top_15))),
-                    y=top_15['Tanimoto_Similarity'],
-                    mode='markers+lines',
-                    name='Similarity Score',
-                    marker=dict(size=8, color=top_15['Tanimoto_Similarity'], colorscale='Viridis'),
-                    text=[f"{row['PDB_ID']}-{row['Heteroatom_Code']}" for _, row in top_15.iterrows()],
-                    hovertemplate='<b>%{text}</b><br>Similarity: %{y:.3f}<extra></extra>'
-                ))
-                fig_scatter.update_layout(
-                    title="Top 15 Similarity Scores", 
-                    xaxis_title="Rank", 
-                    yaxis_title="Similarity",
-                    height=300,  # Reduced height
-                    margin=dict(t=30, b=30, l=30, r=30)
-                )
-                st.plotly_chart(fig_scatter, use_container_width=True)
-        
-        # Compact download section - horizontal buttons
-        st.subheader("📥 Downloads")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            csv = results.to_csv(index=False)
-            st.download_button(
-                label="📥 CSV Results",
-                data=csv,
-                file_name=f"similarity_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-                use_container_width=True
+            if not smiles or pd.isna(smiles) or smiles.strip() == '':
+                return None
+
+            mol = Chem.MolFromSmiles(smiles.strip())
+            if mol is None:
+                return None
+
+            # Generate Morgan fingerprint with optimized parameters
+            fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+                mol, self.radius, nBits=self.n_bits
             )
-        with col2:
-            summary_report = self._generate_similarity_summary(results, target_smiles, mode)
-            st.download_button(
-                label="📄 Report",
-                data=summary_report,
-                file_name=f"similarity_report_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-        with col3:
-            # Generate insights
-            insights = self._generate_similarity_insights(results, target_smiles)
-            st.download_button(
-                label="💡 Insights",
-                data=insights,
-                file_name=f"similarity_insights_{mode}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
+            return fp
+        except Exception:
+            return None
 
-    def _generate_heteroatom_summary(self, results: pd.DataFrame, mode: str) -> str:
-        """Generate compact summary for heteroatom results"""
-        summary = f"""HETEROATOM EXTRACTION SUMMARY ({mode.upper()})
-==================================================
-Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Mode: {mode}
+    def _calculate_tanimoto_similarity_optimized(self, fp1, fp2):
+        """Calculate Tanimoto similarity between two fingerprints - OPTIMIZED."""
+        try:
+            from rdkit import DataStructs
+            
+            if fp1 is None or fp2 is None:
+                return 0.0
 
-OVERVIEW:
-- Total Records: {len(results)}
-- Unique PDBs: {results['PDB_ID'].nunique()}
-- Unique Heteroatoms: {results['Heteroatom_Code'].nunique()}
-- Records with SMILES: {len(results[results['SMILES'] != ''])}
-
-TOP 10 HETEROATOMS:
-"""
-        top_heteroatoms = results['Heteroatom_Code'].value_counts().head(10)
-        for code, count in top_heteroatoms.items():
-            summary += f"  {code}: {count} occurrences\n"
-        
-        return summary
-
-    def _generate_similarity_insights(self, results: pd.DataFrame, target_smiles: str) -> str:
-        """Generate insights for similarity analysis"""
-        if 'Tanimoto_Similarity' not in results.columns:
-            return "No similarity data available for insights."
-        
-        insights = f"""SIMILARITY ANALYSIS INSIGHTS
-============================
-Target: {target_smiles}
-Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-KEY INSIGHTS:
-- Best Match: {results.iloc[0]['PDB_ID']}-{results.iloc[0]['Heteroatom_Code']} (Score: {results.iloc[0]['Tanimoto_Similarity']:.3f})
-- High Similarity Compounds (≥0.8): {len(results[results['Tanimoto_Similarity'] >= 0.8])}
-- Medium Similarity Compounds (0.5-0.8): {len(results[(results['Tanimoto_Similarity'] >= 0.5) & (results['Tanimoto_Similarity'] < 0.8)])}
-- Unique PDB Structures: {results['PDB_ID'].nunique()}
-
-RECOMMENDATIONS:
-- Focus on compounds with similarity ≥ 0.7 for structural analysis
-- Consider PDB structures with multiple similar heteroatoms
-- Validate top matches through experimental studies
-"""
-        return insights
+            return DataStructs.TanimotoSimilarity(fp1, fp2)
+        except:
+            return 0.0
 
 class TrackMyPDBNLInterface:
     """
