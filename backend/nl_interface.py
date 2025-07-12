@@ -2,16 +2,30 @@ import streamlit as st
 import datetime
 from typing import Dict, List, Any
 from .agent_core import TrackMyPDBAgent, AgentQuery
+from .gemini_agent import GeminiAgent
 import plotly.graph_objects as go
 import pandas as pd
 
 class NaturalLanguageInterface:
     def __init__(self, agent: TrackMyPDBAgent):
         self.agent = agent
+        self.gemini = None  # Will be initialized when API key is provided
+    
+    def initialize_gemini(self, api_key: str):
+        """Initialize Gemini agent with API key"""
+        self.gemini = GeminiAgent(api_key)
     
     def render_chat_interface(self):
         """Render the natural language chat interface"""
         st.subheader("🧬 Ask TrackMyPDB")
+        
+        # API key input in sidebar
+        with st.sidebar:
+            st.subheader("🔑 Gemini API Configuration")
+            api_key = st.text_input("Enter Gemini API Key:", type="password")
+            if api_key and self.gemini is None:
+                self.initialize_gemini(api_key)
+                st.success("✅ Gemini AI connected!")
         
         # Initialize chat history
         if "chat_history" not in st.session_state:
@@ -30,15 +44,8 @@ class NaturalLanguageInterface:
         # Display chat history
         self._display_chat_history()
     
-    def _process_user_input_sync(self, user_input: str):
+    async def _process_user_input_sync(self, user_input: str):
         """Process user input synchronously for Streamlit compatibility"""
-        # Create query
-        query = AgentQuery(
-            text=user_input,
-            timestamp=datetime.datetime.now(),
-            query_type="complete_pipeline"  # Default to complete pipeline for NL queries
-        )
-        
         # Add to chat history
         if not hasattr(st.session_state, 'chat_history'):
             st.session_state.chat_history = []
@@ -46,21 +53,43 @@ class NaturalLanguageInterface:
         st.session_state.chat_history.append({
             "type": "user",
             "content": user_input,
-            "timestamp": query.timestamp.isoformat()
+            "timestamp": datetime.datetime.now().isoformat()
         })
         
-        # Extract potential parameters from user input
-        params = self._extract_parameters(user_input)
+        # Use Gemini for enhanced understanding if available
+        if self.gemini:
+            with st.spinner("🧠 Analyzing with Gemini AI..."):
+                gemini_response = await self.gemini.process_query(user_input)
+                action = gemini_response["action"]
+                parameters = gemini_response["parameters"]
+                explanation = gemini_response["explanation"]
+                
+                # Add Gemini's explanation to chat
+                st.session_state.chat_history.append({
+                    "type": "agent",
+                    "content": f"💡 {explanation}",
+                    "timestamp": datetime.datetime.now().isoformat()
+                })
+        else:
+            # Fallback to rule-based parameter extraction
+            params = self._extract_parameters(user_input)
+            action = params["action"]
+            parameters = params["parameters"]
         
         # Process with agent
-        with st.spinner("🧠 Analyzing your request..."):
+        with st.spinner("🔬 Processing analysis..."):
             response = self.agent.execute_action(
-                action_name=params["action"],
-                parameters=params["parameters"]
+                action_name=action,
+                parameters=parameters
             )
         
         # Format response
         response_text = self._format_response(response)
+        
+        # Get scientific explanation from Gemini if available
+        if self.gemini and "error" not in response:
+            explanation = self.gemini.get_scientific_explanation(response)
+            response_text += f"\n\n🔬 Scientific Analysis:\n{explanation}"
         
         # Add agent response to chat history
         st.session_state.chat_history.append({
@@ -68,9 +97,13 @@ class NaturalLanguageInterface:
             "content": response_text,
             "timestamp": datetime.datetime.now().isoformat()
         })
+        
+        # Display results with visualizations
+        if "error" not in response:
+            self._display_results(response, action)
     
     def _extract_parameters(self, text: str) -> Dict[str, Any]:
-        """Extract action and parameters from natural language input"""
+        """Extract action and parameters from natural language input (fallback method)"""
         text = text.lower()
         params = {"parameters": {}}
         
