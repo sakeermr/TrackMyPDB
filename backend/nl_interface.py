@@ -5,6 +5,7 @@ from .agent_core import TrackMyPDBAgent, AgentQuery
 from .gemini_agent import GeminiAgent
 import plotly.graph_objects as go
 import pandas as pd
+import asyncio
 
 class NaturalLanguageInterface:
     def __init__(self, agent: TrackMyPDBAgent):
@@ -33,24 +34,34 @@ class NaturalLanguageInterface:
         
         if st.button("Send") and user_input:
             # Process user input synchronously since we're in Streamlit
-            self._process_user_input_sync(user_input)
+            self._process_user_input(user_input)
         
         # Display chat history
         self._display_chat_history()
     
-    async def _process_user_input_sync(self, user_input: str):
+    def _process_user_input(self, user_input: str):
         """Process user input synchronously for Streamlit compatibility"""
         # Add to chat history
         if not hasattr(st.session_state, 'chat_history'):
             st.session_state.chat_history = []
         
-        # Check if this is a continuation query
-        if user_input.lower().strip() in ["continue", "continue to iterate", "continue iteration"]:
-            if hasattr(st.session_state, 'last_results'):
-                should_continue = self.gemini.should_continue_iteration(st.session_state.last_results)
+        # Check if this is a continuation query - make it more flexible
+        continuation_phrases = [
+            "continue", "continue to iterate", "continue iteration", 
+            "continue to iterate?", "continue?", "iterate", "keep going",
+            "next iteration", "another iteration", "run again"
+        ]
+        
+        if any(phrase in user_input.lower().strip() for phrase in continuation_phrases):
+            if hasattr(st.session_state, 'last_results') and hasattr(st.session_state, 'last_action'):
+                if self.gemini:
+                    should_continue = self.gemini.should_continue_iteration(st.session_state.last_results)
+                else:
+                    should_continue = True  # Default to continue if no Gemini
+                    
                 if should_continue:
                     # Perform another iteration with previous parameters
-                    with st.spinner("🔄 Continuing analysis..."):
+                    with st.spinner("🔄 Continuing analysis iteration..."):
                         response = self.agent.execute_action(
                             action_name=st.session_state.last_action,
                             parameters=st.session_state.last_parameters
@@ -61,6 +72,14 @@ class NaturalLanguageInterface:
                         if self.gemini:
                             explanation = self.gemini.get_scientific_explanation(response)
                             response_text += f"🔬 Scientific Analysis of New Results:\n{explanation}"
+                        
+                        # Check if another iteration is recommended
+                        if self.gemini:
+                            should_continue_more = self.gemini.should_continue_iteration(response)
+                            if should_continue_more:
+                                response_text += "\n\n💡 The analysis could benefit from another iteration. Type 'continue' to proceed."
+                            else:
+                                response_text += "\n\n✅ Analysis has converged - optimal results achieved."
                 else:
                     response_text = "📊 Analysis has converged - no further iterations needed."
                 
@@ -69,9 +88,19 @@ class NaturalLanguageInterface:
                     "content": response_text,
                     "timestamp": datetime.datetime.now().isoformat()
                 })
+                
+                # Display the new results
+                if "error" not in response:
+                    self._display_results(response, st.session_state.last_action)
+                
                 return
             else:
-                st.warning("No previous analysis to continue from.")
+                response_text = "❌ No previous analysis to continue from. Please start a new analysis first."
+                st.session_state.chat_history.append({
+                    "type": "agent",
+                    "content": response_text,
+                    "timestamp": datetime.datetime.now().isoformat()
+                })
                 return
             
         st.session_state.chat_history.append({
@@ -83,21 +112,31 @@ class NaturalLanguageInterface:
         # Use Gemini for enhanced understanding if available
         if self.gemini:
             with st.spinner("🧠 Analyzing with Gemini AI..."):
-                gemini_response = await self.gemini.process_query(user_input)
-                action = gemini_response["action"]
-                parameters = gemini_response["parameters"]
-                explanation = gemini_response["explanation"]
-                
-                # Store for potential continuation
-                st.session_state.last_action = action
-                st.session_state.last_parameters = parameters
-                
-                # Add Gemini's explanation to chat
-                st.session_state.chat_history.append({
-                    "type": "agent",
-                    "content": f"💡 {explanation}",
-                    "timestamp": datetime.datetime.now().isoformat()
-                })
+                try:
+                    # Run async function in sync context
+                    gemini_response = self.gemini.process_query_sync(user_input)
+                    action = gemini_response["action"]
+                    parameters = gemini_response["parameters"]
+                    explanation = gemini_response["explanation"]
+                    
+                    # Store for potential continuation
+                    st.session_state.last_action = action
+                    st.session_state.last_parameters = parameters
+                    
+                    # Add Gemini's explanation to chat
+                    st.session_state.chat_history.append({
+                        "type": "agent",
+                        "content": f"💡 {explanation}",
+                        "timestamp": datetime.datetime.now().isoformat()
+                    })
+                except Exception as e:
+                    st.error(f"Error processing with Gemini: {e}")
+                    # Fallback to rule-based extraction
+                    params = self._extract_parameters(user_input)
+                    action = params["action"]
+                    parameters = params["parameters"]
+                    st.session_state.last_action = action
+                    st.session_state.last_parameters = parameters
         else:
             # Fallback to rule-based parameter extraction
             params = self._extract_parameters(user_input)
@@ -117,13 +156,16 @@ class NaturalLanguageInterface:
         # Format response and get scientific explanation
         response_text = self._format_response(response)
         if self.gemini and "error" not in response:
-            explanation = self.gemini.get_scientific_explanation(response)
-            response_text += f"\n\n🔬 Scientific Analysis:\n{explanation}"
-            
-            # Add iteration suggestion if appropriate
-            should_continue = self.gemini.should_continue_iteration(response)
-            if should_continue:
-                response_text += "\n\n💡 The analysis could benefit from another iteration. Type 'continue' to proceed."
+            try:
+                explanation = self.gemini.get_scientific_explanation(response)
+                response_text += f"\n\n🔬 Scientific Analysis:\n{explanation}"
+                
+                # Add iteration suggestion if appropriate
+                should_continue = self.gemini.should_continue_iteration(response)
+                if should_continue:
+                    response_text += "\n\n💡 The analysis could benefit from another iteration. Type 'continue' to proceed."
+            except Exception as e:
+                st.warning(f"Could not generate scientific explanation: {e}")
         
         # Add agent response to chat history
         st.session_state.chat_history.append({

@@ -8,10 +8,14 @@ Licensed under MIT License - Open Source Project
 """
 
 import os
+import re
+import json
 from typing import Dict, Any
 import google.generativeai as genai
 from dotenv import load_dotenv
 import streamlit as st
+import asyncio
+from .config import Config
 
 class GeminiAgent:
     """
@@ -21,13 +25,17 @@ class GeminiAgent:
     
     def __init__(self):
         """Initialize the Gemini AI agent"""
-        load_dotenv()  # Load environment variables
+        # Try multiple environment variable names for flexibility
+        api_key = (
+            os.getenv('GEMINI_API_KEY') or 
+            os.getenv('GOOGLE_API_KEY') or 
+            getattr(Config, 'GEMINI_API_KEY', None) or
+            getattr(Config, 'GOOGLE_API_KEY', None)
+        )
         
-        # Configure Gemini
-        api_key = os.getenv('GOOGLE_API_KEY')
         if not api_key:
-            raise ValueError("GOOGLE_API_KEY environment variable not set")
-            
+            raise ValueError("No Gemini API key found. Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
+        
         genai.configure(api_key=api_key)
         
         # Get the Gemini model
@@ -36,53 +44,62 @@ class GeminiAgent:
         except Exception as e:
             raise Exception(f"Failed to initialize Gemini model: {e}")
 
-    async def process_query(self, query: str) -> Dict[str, Any]:
-        """
-        Process a natural language query and determine appropriate actions
-        
-        Args:
-            query (str): The user's natural language query
-            
-        Returns:
-            dict: Action parameters extracted from the query
-        """
+    def process_query_sync(self, query: str) -> Dict[str, Any]:
+        """Synchronous wrapper for process_query"""
         try:
-            # Prompt engineering for better extraction
-            prompt = f"""
-            Analyze this protein analysis query: "{query}"
-            
-            Extract:
-            1. Main action (extract_heteroatoms/analyze_similarity/complete_pipeline)
-            2. Parameters (UniProt IDs, SMILES, threshold, etc.)
-            3. A brief explanation of what will be done
-            
-            Format response as JSON with keys:
-            - action: string
-            - parameters: object
-            - explanation: string
-            """
-            
-            response = await self.model.generate_content(prompt)
-            result = response.text
-            
-            # Parse the JSON response
+            # Create new event loop if none exists
             try:
-                parsed = eval(result)  # Safe since we control the input
-                return parsed
-            except:
-                # Fallback to basic extraction
-                return {
-                    "action": "extract_heteroatoms",
-                    "parameters": {},
-                    "explanation": "Analyzing protein structure..."
-                }
-                
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If loop is running, we need to use run_in_executor
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, self.process_query(query))
+                        return future.result()
+                else:
+                    return loop.run_until_complete(self.process_query(query))
+            except RuntimeError:
+                # No event loop exists, create one
+                return asyncio.run(self.process_query(query))
         except Exception as e:
-            st.error(f"Error processing query with Gemini: {e}")
+            # Fallback to simple parsing if Gemini fails
+            return self._fallback_parse(query)
+
+    async def process_query(self, query: str) -> Dict[str, Any]:
+        """Process natural language query using Gemini"""
+        try:
+            prompt = self._create_analysis_prompt(query)
+            response = await self._generate_response(prompt)
+            return self._parse_gemini_response(response, query)
+        except Exception as e:
+            # Fallback to simple parsing
+            return self._fallback_parse(query)
+    
+    def _fallback_parse(self, query: str) -> Dict[str, Any]:
+        """Fallback parsing when Gemini is not available"""
+        query_lower = query.lower()
+        
+        if "heteroatom" in query_lower or "extract" in query_lower:
+            # Extract protein names using simple regex
+            protein_match = re.search(r'\b([A-Z0-9]{3,6})\b', query.upper())
+            protein_name = protein_match.group(1) if protein_match else "1ABC"
+            
             return {
                 "action": "extract_heteroatoms",
-                "parameters": {},
-                "explanation": "Analyzing protein structure..."
+                "parameters": {"protein_name": protein_name},
+                "explanation": f"Extracting heteroatoms from protein {protein_name}"
+            }
+        elif "similarity" in query_lower or "compare" in query_lower:
+            return {
+                "action": "similarity_analysis", 
+                "parameters": {"threshold": 0.8},
+                "explanation": "Performing similarity analysis with default threshold"
+            }
+        else:
+            return {
+                "action": "extract_heteroatoms",
+                "parameters": {"protein_name": "1ABC"},
+                "explanation": "Default action: extracting heteroatoms"
             }
 
     def get_scientific_explanation(self, results: Dict[str, Any]) -> str:
