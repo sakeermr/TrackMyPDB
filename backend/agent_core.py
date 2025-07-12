@@ -40,9 +40,10 @@ class AgentResponse:
 class TrackMyPDBAgent:
     def __init__(self):
         self.heteroatom_extractor = HeteroatomExtractor()
+        # Initialize with default settings
         self.similarity_analyzer = SimilarityAnalyzer()
         self.query_history = []
-    
+
     def add_to_history(self, query: AgentQuery):
         """Add a query to the history"""
         self.query_history.append(query)
@@ -68,10 +69,17 @@ class TrackMyPDBAgent:
             threshold = parameters.get("threshold", 0.7)
             radius = parameters.get("radius", 2)
             n_bits = parameters.get("n_bits", 2048)
+            fp_type = parameters.get("fp_type", "morgan")
+            metric = parameters.get("metric", "tanimoto")
             
             if hasattr(self, "last_heteroatom_results"):
                 # Create new analyzer with custom parameters
-                analyzer = SimilarityAnalyzer(radius=radius, n_bits=n_bits)
+                analyzer = SimilarityAnalyzer(
+                    radius=radius,
+                    n_bits=n_bits,
+                    fp_type=fp_type,
+                    metric=metric
+                )
                 results = analyzer.analyze_similarity(
                     target_smiles=smiles,
                     heteroatom_df=self.last_heteroatom_results,
@@ -87,13 +95,20 @@ class TrackMyPDBAgent:
             threshold = parameters.get("threshold", 0.7)
             radius = parameters.get("radius", 2)
             n_bits = parameters.get("n_bits", 2048)
+            fp_type = parameters.get("fp_type", "morgan")
+            metric = parameters.get("metric", "tanimoto")
             
             # First extract heteroatoms
             heteroatom_results = self.heteroatom_extractor.extract_heteroatoms(uniprot_ids)
             self.last_heteroatom_results = heteroatom_results
             
-            # Create new analyzer with custom parameters
-            analyzer = SimilarityAnalyzer(radius=radius, n_bits=n_bits)
+            # Create analyzer with custom parameters
+            analyzer = SimilarityAnalyzer(
+                radius=radius,
+                n_bits=n_bits,
+                fp_type=fp_type,
+                metric=metric
+            )
             
             # Then analyze similarity
             similarity_results = analyzer.analyze_similarity(

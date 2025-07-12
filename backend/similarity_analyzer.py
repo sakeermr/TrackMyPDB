@@ -1,49 +1,82 @@
 """
-TrackMyPDB Molecular Similarity Analyzer (Corrected Algorithm)
+TrackMyPDB Molecular Similarity Analyzer (Advanced Version)
 @author Anu Gamage
 
-Based on the proven Colab notebook algorithm for accurate molecular similarity analysis.
+Enhanced algorithm with multiple fingerprint types and advanced similarity metrics.
 Licensed under MIT License - Open Source Project
 """
 
 import pandas as pd
 import numpy as np
 from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors, DataStructs
-from rdkit import DataStructs
+from rdkit.Chem import rdMolDescriptors, DataStructs, AllChem, MACCSkeys
+from rdkit.DataStructs.cDataStructs import TanimotoSimilarity, DiceSimilarity, CosineSimilarity
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+from typing import Dict, List, Any, Optional, Tuple
 import warnings
 
 warnings.filterwarnings('ignore')
 
-
 class SimilarityAnalyzer:
     """
-    A comprehensive tool for molecular similarity analysis using Morgan fingerprints
-    and Tanimoto similarity scoring - corrected algorithm from Colab notebook.
+    Advanced molecular similarity analyzer with multiple fingerprint types
+    and similarity metrics.
     """
 
-    def __init__(self, radius=2, n_bits=2048):
+    FINGERPRINT_TYPES = {
+        'morgan': lambda mol, radius, n_bits: rdMolDescriptors.GetMorganFingerprintAsBitVect(mol, radius, nBits=n_bits),
+        'maccs': lambda mol, *args: MACCSkeys.GenMACCSKeys(mol),
+        'topological': lambda mol, *args: rdMolDescriptors.GetHashedAtomPairFingerprintAsBitVect(mol),
+        'rdkit': lambda mol, *args: rdMolDescriptors.GetHashedMorganFingerprint(mol, 2),
+        'pattern': lambda mol, *args: rdMolDescriptors.GetHashedAtomPairFingerprint(mol)
+    }
+
+    SIMILARITY_METRICS = {
+        'tanimoto': TanimotoSimilarity,
+        'dice': DiceSimilarity,
+        'cosine': CosineSimilarity
+    }
+
+    def __init__(self, radius=2, n_bits=2048, fp_type='morgan', metric='tanimoto'):
         self.radius = radius
         self.n_bits = n_bits
+        self.fp_type = fp_type
+        self.metric = metric
         self.fingerprints = {}
         self.valid_molecules = {}
-
-    def smiles_to_fingerprint(self, smiles):
-        """
-        Convert SMILES string to Morgan fingerprint.
         
-        Args:
-            smiles (str): SMILES string
-            
-        Returns:
-            Morgan fingerprint or None if invalid
-        """
+        # Validate parameters
+        if fp_type not in self.FINGERPRINT_TYPES:
+            raise ValueError(f"Invalid fingerprint type. Choose from: {list(self.FINGERPRINT_TYPES.keys())}")
+        if metric not in self.SIMILARITY_METRICS:
+            raise ValueError(f"Invalid similarity metric. Choose from: {list(self.SIMILARITY_METRICS.keys())}")
+
+    def get_molecular_descriptors(self, mol) -> Dict[str, float]:
+        """Calculate additional molecular descriptors"""
+        if mol is None:
+            return {}
+        
+        try:
+            return {
+                'MW': rdMolDescriptors.CalcExactMolWt(mol),
+                'LogP': rdMolDescriptors.CalcCrippenDescriptors(mol)[0],
+                'TPSA': rdMolDescriptors.CalcTPSA(mol),
+                'HBA': rdMolDescriptors.CalcNumHBA(mol),
+                'HBD': rdMolDescriptors.CalcNumHBD(mol),
+                'RotBonds': rdMolDescriptors.CalcNumRotatableBonds(mol),
+                'Rings': rdMolDescriptors.CalcNumRings(mol),
+                'AromaticRings': rdMolDescriptors.CalcNumAromaticRings(mol)
+            }
+        except:
+            return {}
+
+    def smiles_to_fingerprint(self, smiles: str) -> Optional[Any]:
+        """Enhanced SMILES to fingerprint conversion with multiple fingerprint types"""
         try:
             if not smiles or pd.isna(smiles) or smiles.strip() == '':
                 return None
@@ -52,29 +85,30 @@ class SimilarityAnalyzer:
             if mol is None:
                 return None
 
-            # Generate Morgan fingerprint - exact same as Colab
-            fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
-                mol, self.radius, nBits=self.n_bits
-            )
+            # Generate fingerprint using selected method
+            fp = self.FINGERPRINT_TYPES[self.fp_type](mol, self.radius, self.n_bits)
             return fp
         except Exception as e:
             st.warning(f"⚠️ Error processing SMILES '{smiles}': {e}")
             return None
 
-    def calculate_tanimoto_similarity(self, fp1, fp2):
-        """
-        Calculate Tanimoto similarity between two fingerprints.
-        
-        Args:
-            fp1, fp2: RDKit fingerprint objects
-            
-        Returns:
-            float: Tanimoto similarity score (0-1)
-        """
+    def calculate_similarity(self, fp1: Any, fp2: Any) -> float:
+        """Calculate similarity using selected metric"""
         if fp1 is None or fp2 is None:
             return 0.0
 
-        return DataStructs.TanimotoSimilarity(fp1, fp2)
+        return self.SIMILARITY_METRICS[self.metric](fp1, fp2)
+
+    def analyze_substructure_matches(self, target_mol, query_mol) -> Tuple[bool, int]:
+        """Analyze substructure matches between molecules"""
+        if target_mol is None or query_mol is None:
+            return False, 0
+            
+        try:
+            matches = target_mol.GetSubstructMatches(query_mol)
+            return bool(matches), len(matches)
+        except:
+            return False, 0
 
     def load_and_process_dataframe(self, df, smiles_column='SMILES',
                                   pdb_column='PDB_ID',
@@ -141,58 +175,63 @@ class SimilarityAnalyzer:
         st.success(f"✅ Successfully processed {len(processed_df)} molecules with valid fingerprints")
         return processed_df
 
-    def find_similar_ligands(self, target_smiles, processed_df, top_n=50, min_similarity=0.0):
-        """
-        Find ligands similar to target molecule.
-        Uses the exact same logic as the Colab notebook.
-        
-        Args:
-            target_smiles (str): Target molecule SMILES
-            processed_df (pd.DataFrame): DataFrame with computed fingerprints
-            top_n (int): Number of top results to return
-            min_similarity (float): Minimum similarity threshold
-            
-        Returns:
-            pd.DataFrame: Sorted DataFrame with similarity scores
-        """
+    def find_similar_ligands(self, target_smiles: str, processed_df: pd.DataFrame, 
+                           top_n: int = 50, min_similarity: float = 0.0) -> pd.DataFrame:
+        """Enhanced similar ligand search with substructure analysis"""
         st.info(f"🎯 Analyzing similarity to target: {target_smiles}")
 
-        # Generate target fingerprint - exact same as Colab
+        target_mol = Chem.MolFromSmiles(target_smiles)
         target_fp = self.smiles_to_fingerprint(target_smiles)
+        
         if target_fp is None:
             raise ValueError(f"Invalid target SMILES: {target_smiles}")
 
-        # Calculate similarities - exact same as Colab
-        similarities = []
-        st.info("🔍 Computing similarities...")
+        target_descriptors = self.get_molecular_descriptors(target_mol)
 
-        # Progress tracking for Streamlit
+        similarities = []
+        matches = []
+        descriptors = []
+        
         progress_bar = st.progress(0)
         status_text = st.empty()
 
         for idx, (original_idx, row) in enumerate(processed_df.iterrows()):
-            # Update progress
             progress = (idx + 1) / len(processed_df)
             progress_bar.progress(progress)
             status_text.text(f"Computing similarities... {idx+1}/{len(processed_df)}")
-
+            
+            # Calculate similarity
             ligand_fp = row['Fingerprint']
-            similarity = self.calculate_tanimoto_similarity(target_fp, ligand_fp)
+            similarity = self.calculate_similarity(target_fp, ligand_fp)
+            
+            # Analyze substructure matches
+            query_mol = Chem.MolFromSmiles(row['SMILES'])
+            has_match, match_count = self.analyze_substructure_matches(target_mol, query_mol)
+            
+            # Calculate molecular descriptors
+            mol_descriptors = self.get_molecular_descriptors(query_mol)
+            
             similarities.append(similarity)
+            matches.append((has_match, match_count))
+            descriptors.append(mol_descriptors)
 
-        # Clean up progress indicators
         progress_bar.empty()
         status_text.empty()
 
-        # Add similarity scores to DataFrame - exact same as Colab
+        # Create enhanced results DataFrame
         result_df = processed_df.copy()
-        result_df['Tanimoto_Similarity'] = similarities
+        result_df[f'{self.metric.capitalize()}_Similarity'] = similarities
+        result_df['Has_Substructure_Match'] = [m[0] for m in matches]
+        result_df['Substructure_Match_Count'] = [m[1] for m in matches]
+        
+        # Add molecular descriptors
+        for desc in descriptors[0].keys():
+            result_df[f'Delta_{desc}'] = [d.get(desc, 0) - target_descriptors.get(desc, 0) for d in descriptors]
 
-        # Filter by minimum similarity and sort - exact same as Colab
-        result_df = result_df[result_df['Tanimoto_Similarity'] >= min_similarity]
-        result_df = result_df.sort_values('Tanimoto_Similarity', ascending=False)
+        # Filter and sort results
+        result_df = result_df[result_df[f'{self.metric.capitalize()}_Similarity'] >= min_similarity]
+        result_df = result_df.sort_values(f'{self.metric.capitalize()}_Similarity', ascending=False)
 
-        # Return top results - exact same as Colab
         top_results = result_df.head(top_n)
 
         st.success(f"🏆 Found {len(result_df)} ligands above similarity threshold {min_similarity}")

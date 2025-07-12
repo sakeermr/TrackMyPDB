@@ -3,7 +3,7 @@ TrackMyPDB - Streamlit Application
 @author Anu Gamage
 
 A comprehensive bioinformatics pipeline for extracting heteroatoms from protein structures
-and finding molecularly similar compounds using fingerprint-based similarity analysis.
+and finding molecularly similar compounds using advanced fingerprint-based similarity analysis.
 
 Licensed under MIT License - Open Source Project
 """
@@ -28,7 +28,6 @@ try:
     # Import RDKit first to ensure it's available
     import rdkit
     from backend.similarity_analyzer import SimilarityAnalyzer
-    from backend.similarity_analyzer import MolecularSimilarityAnalyzer
 except ImportError as e:
     # Only fall back to simplified version if RDKit specifically fails
     if 'rdkit' in str(e):
@@ -82,10 +81,9 @@ def main():
         render_traditional_interface()
 
 def render_traditional_interface():
-    """Render the traditional interface with AI enhancements"""
+    """Render the traditional interface with advanced analysis options"""
     st.subheader("Traditional Analysis Interface")
     
-    # Initialize session state for heteroatom results if not exists
     if 'heteroatom_results' not in st.session_state:
         st.session_state.heteroatom_results = None
     
@@ -116,37 +114,63 @@ def render_traditional_interface():
                     st.error(f"Error: {results['error']}")
                 else:
                     st.success("✅ Analysis complete!")
-                    # Store in session state
                     st.session_state.heteroatom_results = results["results"]
                     st.write(results["results"])
     
     elif analysis_type == "🧪 Similarity Analysis":
         st.subheader("Similarity Analysis")
         
-        # Check for heteroatom results in session state
         if st.session_state.heteroatom_results is None:
             st.warning("⚠️ Please run heteroatom extraction first")
             return
         
-        # Morgan fingerprint parameters
-        col1, col2 = st.columns(2)
-        with col1:
-            radius = st.slider(
-                "Morgan Fingerprint Radius",
-                min_value=1,
-                max_value=4,
-                value=2,
-                help="💡 Radius parameter for Morgan fingerprint generation"
-            )
-        with col2:
-            n_bits = st.slider(
-                "Number of Bits",
-                min_value=512,
-                max_value=4096,
-                value=2048,
-                step=512,
-                help="💡 Number of bits in Morgan fingerprint"
-            )
+        # Advanced molecular analysis options
+        with st.expander("🔬 Advanced Analysis Options", expanded=True):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                fp_type = st.selectbox(
+                    "Fingerprint Type",
+                    options=list(SimilarityAnalyzer.FINGERPRINT_TYPES.keys()),
+                    help="""
+                    - Morgan: Extended connectivity fingerprints (ECFP)
+                    - MACCS: 166 predefined structural keys
+                    - Topological: Atom pair fingerprints
+                    - RDKit: RDKit's default fingerprints
+                    - Pattern: Detailed atom pair patterns
+                    """
+                )
+                
+                similarity_metric = st.selectbox(
+                    "Similarity Metric",
+                    options=list(SimilarityAnalyzer.SIMILARITY_METRICS.keys()),
+                    help="""
+                    - Tanimoto: Standard similarity coefficient
+                    - Dice: Emphasizes common features
+                    - Cosine: Angular similarity between fingerprints
+                    """
+                )
+            
+            with col2:
+                if fp_type == 'morgan':
+                    radius = st.slider(
+                        "Morgan Fingerprint Radius",
+                        min_value=1,
+                        max_value=4,
+                        value=2,
+                        help="Radius parameter for Morgan fingerprint generation"
+                    )
+                    n_bits = st.slider(
+                        "Number of Bits",
+                        min_value=512,
+                        max_value=4096,
+                        value=2048,
+                        step=512,
+                        help="Number of bits in fingerprint"
+                    )
+                else:
+                    radius = 2
+                    n_bits = 2048
         
         smiles_input = st.text_area(
             "SMILES String",
@@ -158,24 +182,62 @@ def render_traditional_interface():
             min_value=0.0,
             max_value=1.0,
             value=0.7,
-            help="💡 AI Tip: Higher values mean more similar compounds"
+            help="Higher values mean more similar compounds"
         )
         
         if st.button("🔍 Analyze Similarity"):
             if smiles_input:
                 with st.spinner("🧪 Analyzing similarity..."):
-                    # Create new analyzer with custom parameters
-                    analyzer = MolecularSimilarityAnalyzer(radius=radius, n_bits=n_bits)
+                    # Create analyzer with selected options
+                    analyzer = SimilarityAnalyzer(
+                        radius=radius,
+                        n_bits=n_bits,
+                        fp_type=fp_type,
+                        metric=similarity_metric
+                    )
                     results = analyzer.analyze_similarity(
                         target_smiles=smiles_input,
                         heteroatom_df=st.session_state.heteroatom_results,
                         min_similarity=threshold
                     )
                     st.success("✅ Analysis complete!")
-                    st.write(results)
+                    
+                    # Show advanced molecular information
+                    if len(results) > 0:
+                        with st.expander("🔬 Advanced Molecular Analysis", expanded=True):
+                            st.markdown("### Molecular Property Differences")
+                            property_cols = [col for col in results.columns if col.startswith('Delta_')]
+                            if property_cols:
+                                property_df = results[['PDB_ID', 'Heteroatom_Code'] + property_cols].head(10)
+                                st.dataframe(
+                                    property_df,
+                                    use_container_width=True,
+                                    column_config={
+                                        prop: st.column_config.NumberColumn(
+                                            prop.replace('Delta_', 'Δ '),
+                                            help="Difference from target molecule",
+                                            format="%.2f"
+                                        ) for prop in property_cols
+                                    }
+                                )
+                            
+                            st.markdown("### Substructure Analysis")
+                            substructure_df = results[['PDB_ID', 'Heteroatom_Code', 'Has_Substructure_Match', 'Substructure_Match_Count']].head(10)
+                            st.dataframe(substructure_df, use_container_width=True)
     
     else:  # Complete Pipeline
         st.subheader("Complete Pipeline Analysis")
+        
+        # Advanced options in pipeline mode
+        with st.expander("🔬 Advanced Analysis Options", expanded=True):
+            fp_type = st.selectbox(
+                "Fingerprint Type",
+                options=list(SimilarityAnalyzer.FINGERPRINT_TYPES.keys())
+            )
+            similarity_metric = st.selectbox(
+                "Similarity Metric",
+                options=list(SimilarityAnalyzer.SIMILARITY_METRICS.keys())
+            )
         
         uniprot_input = st.text_area(
             "UniProt IDs (one per line or comma-separated)",
@@ -192,7 +254,7 @@ def render_traditional_interface():
             min_value=0.0,
             max_value=1.0,
             value=0.7,
-            help="💡 AI Tip: Higher values mean more similar compounds"
+            help="Higher values mean more similar compounds"
         )
         
         if st.button("🚀 Run Complete Analysis"):
@@ -205,7 +267,9 @@ def render_traditional_interface():
                         {
                             "uniprot_ids": uniprot_ids,
                             "smiles": smiles_input,
-                            "threshold": threshold
+                            "threshold": threshold,
+                            "fp_type": fp_type,
+                            "metric": similarity_metric
                         }
                     )
                     
