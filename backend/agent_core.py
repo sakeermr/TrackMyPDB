@@ -8,6 +8,13 @@ import datetime
 from .heteroatom_extractor import HeteroatomExtractor
 import streamlit as st
 
+# Import the new agentic layer
+from .agentic_layer import (
+    TrackMyPDBAgenticInterface, 
+    AgentMode, 
+    AnalysisType
+)
+
 # Import RDKit first to check availability
 try:
     import rdkit
@@ -22,6 +29,7 @@ class AgentAction(Enum):
     COMPLETE_PIPELINE = "complete_pipeline"
     INTERPRET_RESULTS = "interpret_results"
     SUGGEST_FOLLOWUP = "suggest_followup"
+    AGENTIC_ANALYSIS = "agentic_analysis"  # New agentic analysis
 
 @dataclass
 class AgentQuery:
@@ -43,6 +51,9 @@ class TrackMyPDBAgent:
         # Initialize with default settings
         self.similarity_analyzer = SimilarityAnalyzer()
         self.query_history = []
+        
+        # Initialize the new agentic interface
+        self.agentic_interface = TrackMyPDBAgenticInterface()
 
     def add_to_history(self, query: AgentQuery):
         """Add a query to the history"""
@@ -53,7 +64,7 @@ class TrackMyPDBAgent:
         """Validate a query"""
         if not query.text:
             raise ValueError("Query text cannot be empty")
-        if query.query_type not in ["heteroatom_analysis", "similarity_analysis", "complete_pipeline"]:
+        if query.query_type not in ["heteroatom_analysis", "similarity_analysis", "complete_pipeline", "agentic_analysis"]:
             raise ValueError(f"Invalid query type: {query.query_type}")
         return True
 
@@ -122,8 +133,98 @@ class TrackMyPDBAgent:
                 "similarity_results": similarity_results
             }
         
+        elif action_name == "agentic_analysis":
+            # New agentic analysis action
+            return self._execute_agentic_analysis(parameters)
+        
         else:
             return {"error": f"Unknown action: {action_name}"}
+    
+    def _execute_agentic_analysis(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute agentic analysis using the new agentic layer"""
+        try:
+            # Extract parameters
+            target_smiles = parameters.get("target_smiles", "")
+            mode_str = parameters.get("mode", "ai_assisted")
+            analysis_types_str = parameters.get("analysis_types", ["morgan_similarity", "drug_likeness"])
+            
+            # Convert mode string to enum
+            mode = AgentMode.AI_ASSISTED
+            if mode_str == "manual":
+                mode = AgentMode.MANUAL
+            elif mode_str == "fully_autonomous":
+                mode = AgentMode.FULLY_AUTONOMOUS
+            
+            # Convert analysis types
+            analysis_types = []
+            for analysis_type_str in analysis_types_str:
+                if analysis_type_str == "morgan_similarity":
+                    analysis_types.append(AnalysisType.MORGAN_SIMILARITY)
+                elif analysis_type_str == "tanimoto_similarity":
+                    analysis_types.append(AnalysisType.TANIMOTO_SIMILARITY)
+                elif analysis_type_str == "drug_likeness":
+                    analysis_types.append(AnalysisType.DRUG_LIKENESS)
+            
+            # Get heteroatom data if available
+            heteroatom_data = getattr(self, 'last_heteroatom_results', None)
+            
+            # Run async analysis in sync context (for Streamlit compatibility)
+            import asyncio
+            try:
+                # Try to get existing event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a new thread for the async operation
+                    import threading
+                    import concurrent.futures
+                    
+                    def run_async():
+                        # Create new event loop in thread
+                        new_loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(new_loop)
+                        try:
+                            return new_loop.run_until_complete(
+                                self.agentic_interface.run_comprehensive_analysis(
+                                    target_smiles=target_smiles,
+                                    mode=mode,
+                                    analysis_types=analysis_types,
+                                    heteroatom_data=heteroatom_data,
+                                    **parameters
+                                )
+                            )
+                        finally:
+                            new_loop.close()
+                    
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(run_async)
+                        results = future.result(timeout=60)  # 60 second timeout
+                else:
+                    # No running loop, can use directly
+                    results = loop.run_until_complete(
+                        self.agentic_interface.run_comprehensive_analysis(
+                            target_smiles=target_smiles,
+                            mode=mode,
+                            analysis_types=analysis_types,
+                            heteroatom_data=heteroatom_data,
+                            **parameters
+                        )
+                    )
+            except RuntimeError:
+                # No event loop exists, create one
+                results = asyncio.run(
+                    self.agentic_interface.run_comprehensive_analysis(
+                        target_smiles=target_smiles,
+                        mode=mode,
+                        analysis_types=analysis_types,
+                        heteroatom_data=heteroatom_data,
+                        **parameters
+                    )
+                )
+            
+            return {"agentic_results": results}
+            
+        except Exception as e:
+            return {"error": f"Agentic analysis failed: {str(e)}"}
 
     async def process_query(self, query: AgentQuery) -> Dict[str, Any]:
         """Process a query and return results"""
