@@ -6,10 +6,15 @@ from dataclasses import dataclass
 from enum import Enum
 import datetime
 from .heteroatom_extractor import HeteroatomExtractor
+import streamlit as st
+
+# Import RDKit first to check availability
 try:
-    from .similarity_analyzer import MolecularSimilarityAnalyzer as SimilarityAnalyzer
+    import rdkit
+    from .similarity_analyzer import SimilarityAnalyzer
 except ImportError:
-    from .similarity_analyzer_simple import MolecularSimilarityAnalyzer as SimilarityAnalyzer
+    from .similarity_analyzer_simple import SimilarityAnalyzer
+    st.warning("⚠️ RDKit not available - using simplified molecular similarity")
 
 class AgentAction(Enum):
     EXTRACT_HETEROATOMS = "extract_heteroatoms"

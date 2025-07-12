@@ -25,16 +25,18 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 # Import backend modules
 try:
     from backend.heteroatom_extractor import HeteroatomExtractor
-    # Try to import the full RDKit version first
-    try:
-        from backend.similarity_analyzer import MolecularSimilarityAnalyzer
-    except ImportError:
-        # Fall back to simplified version
-        from backend.similarity_analyzer_simple import MolecularSimilarityAnalyzer
-        st.warning("⚠️ RDKit not available - using simplified molecular similarity")
+    # Import RDKit first to ensure it's available
+    import rdkit
+    from backend.similarity_analyzer import SimilarityAnalyzer
+    from backend.similarity_analyzer import MolecularSimilarityAnalyzer
 except ImportError as e:
-    st.error(f"Error importing backend modules: {e}")
-    st.stop()
+    # Only fall back to simplified version if RDKit specifically fails
+    if 'rdkit' in str(e):
+        from backend.similarity_analyzer_simple import MolecularSimilarityAnalyzer as SimilarityAnalyzer
+        st.warning("⚠️ RDKit not available - using simplified molecular similarity")
+    else:
+        st.error(f"Error importing backend modules: {e}")
+        st.stop()
 
 # Page configuration
 st.set_page_config(
