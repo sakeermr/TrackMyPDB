@@ -56,15 +56,6 @@ if "agent" not in st.session_state:
 if "nl_interface" not in st.session_state:
     st.session_state.nl_interface = NaturalLanguageInterface(st.session_state.agent)
 
-def get_base64_image(image_path):
-    """Convert image to base64 string for embedding in HTML"""
-    try:
-        with open(image_path, "rb") as img_file:
-            return base64.b64encode(img_file.read()).decode()
-    except Exception as e:
-        st.error(f"Error loading image {image_path}: {e}")
-        return ""
-
 def main():
     st.title("🧬 TrackMyPDB - AI-Powered Analysis")
     

@@ -13,11 +13,27 @@ import os
 CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'config.py')
 
 class GeminiAgent:
-    def __init__(self, api_key: str = None):
-        self._initialize_api_key(api_key)
+    def __init__(self):
+        self._initialize_api_key()
         self.model = genai.GenerativeModel('gemini-pro')
-        
-        # Define system prompt for protein analysis
+        self.chat = self.model.start_chat(history=[])
+        self._initialize_chat()
+
+    def _initialize_api_key(self):
+        """Initialize Gemini API key from config file"""
+        try:
+            from . import config
+            if hasattr(config, 'GEMINI_API_KEY') and config.GEMINI_API_KEY:
+                genai.configure(api_key=config.GEMINI_API_KEY)
+            else:
+                raise ValueError("GEMINI_API_KEY not found or empty in config.py")
+        except ImportError:
+            raise ValueError("config.py not found. Please create it with GEMINI_API_KEY")
+        except Exception as e:
+            raise ValueError(f"Error initializing Gemini API: {str(e)}")
+
+    def _initialize_chat(self):
+        """Initialize chat with system prompt for protein analysis"""
         self.system_prompt = """You are an expert protein analysis assistant specializing in:
 1. Heteroatom extraction from protein structures
 2. Molecular similarity analysis
@@ -38,47 +54,9 @@ Format your responses as JSON with the following structure:
     "follow_up_suggestions": ["Suggestion 1", "Suggestion 2"]
 }
 """
-        self.chat = self.model.start_chat(history=[])
-        self._initialize_chat()
-
-    def _initialize_api_key(self, api_key: str = None):
-        """Initialize Gemini API key from provided key or config file"""
-        if api_key:
-            genai.configure(api_key=api_key)
-            self._save_api_key(api_key)  # Save for future use
-        else:
-            # Try to load from config file
-            try:
-                from . import config
-                if hasattr(config, 'GEMINI_API_KEY'):
-                    genai.configure(api_key=config.GEMINI_API_KEY)
-                else:
-                    raise ValueError("No API key found in config.py")
-            except ImportError:
-                self._create_config_file()
-                raise ValueError("Please provide a Gemini API key")
-
-    def _save_api_key(self, api_key: str):
-        """Save API key to config file"""
-        config_content = f"GEMINI_API_KEY = '{api_key}'\n"
-        try:
-            with open(CONFIG_FILE, 'w') as f:
-                f.write(config_content)
-        except Exception as e:
-            st.warning(f"Could not save API key to config file: {e}")
-
-    def _create_config_file(self):
-        """Create config file template if it doesn't exist"""
-        if not os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'w') as f:
-                    f.write("# Gemini API Configuration\nGEMINI_API_KEY = ''\n")
-            except Exception as e:
-                st.warning(f"Could not create config file: {e}")
-
-    def _initialize_chat(self):
-        """Initialize chat with system prompt"""
-        self.chat.send_message(self.system_prompt)
+        response = self.chat.send_message(self.system_prompt)
+        if not response.text:
+            raise ValueError("Failed to initialize chat with system prompt")
 
     def _validate_json_response(self, text: str) -> Dict[str, Any]:
         """Validate and extract JSON from response"""
@@ -115,6 +93,8 @@ Consider:
 Respond with JSON only."""
 
             response = self.chat.send_message(enhanced_query)
+            if not response.text:
+                raise ValueError("Empty response from Gemini")
             
             # Parse and validate response
             result = self._validate_json_response(response.text)
@@ -158,7 +138,24 @@ Focus on:
 Keep it concise and technical."""
 
             response = self.chat.send_message(prompt)
-            return response.text
+            return response.text if response.text else "Could not generate explanation"
 
         except Exception as e:
             return f"Could not generate explanation: {str(e)}"
+
+    def suggest_followup_analyses(self, results: Dict[str, Any]) -> List[str]:
+        """Generate follow-up analysis suggestions based on results"""
+        try:
+            prompt = f"""Based on these analysis results:
+{json.dumps(results, indent=2)}
+
+Suggest 3 follow-up analyses that would provide additional insights.
+Format as a JSON array of strings."""
+
+            response = self.chat.send_message(prompt)
+            suggestions = json.loads(response.text)
+            return suggestions if isinstance(suggestions, list) else []
+        except:
+            return ["Analyze similar protein structures",
+                   "Investigate binding site characteristics",
+                   "Compare with known drug targets"]

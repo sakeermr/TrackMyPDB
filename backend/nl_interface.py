@@ -9,23 +9,17 @@ import pandas as pd
 class NaturalLanguageInterface:
     def __init__(self, agent: TrackMyPDBAgent):
         self.agent = agent
-        self.gemini = None  # Will be initialized when API key is provided
-    
-    def initialize_gemini(self, api_key: str):
-        """Initialize Gemini agent with API key"""
-        self.gemini = GeminiAgent(api_key)
+        # Initialize Gemini immediately using config
+        try:
+            from .gemini_agent import GeminiAgent
+            self.gemini = GeminiAgent()
+        except Exception as e:
+            st.error(f"Error initializing Gemini AI: {e}")
+            self.gemini = None
     
     def render_chat_interface(self):
         """Render the natural language chat interface"""
         st.subheader("🧬 Ask TrackMyPDB")
-        
-        # API key input in sidebar
-        with st.sidebar:
-            st.subheader("🔑 Gemini API Configuration")
-            api_key = st.text_input("Enter Gemini API Key:", type="password")
-            if api_key and self.gemini is None:
-                self.initialize_gemini(api_key)
-                st.success("✅ Gemini AI connected!")
         
         # Initialize chat history
         if "chat_history" not in st.session_state:
