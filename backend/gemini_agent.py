@@ -15,7 +15,9 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import streamlit as st
 import asyncio
-from .config import Config
+
+# Load environment variables
+load_dotenv()
 
 class GeminiAgent:
     """
@@ -28,10 +30,20 @@ class GeminiAgent:
         # Try multiple environment variable names for flexibility
         api_key = (
             os.getenv('GEMINI_API_KEY') or 
-            os.getenv('GOOGLE_API_KEY') or 
-            getattr(Config, 'GEMINI_API_KEY', None) or
-            getattr(Config, 'GOOGLE_API_KEY', None)
+            os.getenv('GOOGLE_API_KEY')
         )
+        
+        # Try to get from config if available
+        try:
+            from .config import Config
+            if not api_key:
+                api_key = (
+                    getattr(Config, 'GEMINI_API_KEY', None) or
+                    getattr(Config, 'GOOGLE_API_KEY', None)
+                )
+        except ImportError:
+            # Config not available, continue with environment variables only
+            pass
         
         if not api_key:
             raise ValueError("No Gemini API key found. Please set GEMINI_API_KEY or GOOGLE_API_KEY environment variable")
@@ -42,7 +54,11 @@ class GeminiAgent:
         try:
             self.model = genai.GenerativeModel('gemini-pro')
         except Exception as e:
-            raise Exception(f"Failed to initialize Gemini model: {e}")
+            # Fallback to gemini-flash if gemini-pro is not available
+            try:
+                self.model = genai.GenerativeModel('gemini-flash')
+            except Exception as e2:
+                raise ValueError(f"Failed to initialize Gemini model: {e2}")
 
     def process_query_sync(self, query: str) -> Dict[str, Any]:
         """Synchronous wrapper for process_query"""
