@@ -71,9 +71,24 @@ class NaturalLanguageInterface:
     
     def _extract_parameters(self, text: str) -> Dict[str, Any]:
         """Extract action and parameters from natural language input"""
-        # Simple rule-based parameter extraction
         text = text.lower()
         params = {"parameters": {}}
+        
+        # Extract Morgan fingerprint parameters if specified
+        radius = 2  # default
+        n_bits = 2048  # default
+        
+        if "radius" in text:
+            for word in text.split():
+                if word.isdigit() and int(word) in range(1, 5):
+                    radius = int(word)
+                    break
+        
+        if "bits" in text:
+            for word in text.split():
+                if word.isdigit() and int(word) in [512, 1024, 2048, 4096]:
+                    n_bits = int(word)
+                    break
         
         if "extract" in text and "heteroatom" in text:
             params["action"] = "extract_heteroatoms"
@@ -93,10 +108,26 @@ class NaturalLanguageInterface:
             # Look for SMILES strings (typically containing parentheses and equals signs)
             words = text.split()
             for word in words:
-                if "(" in word and ")" in word or "=" in word:
+                if ("(" in word and ")" in word) or "=" in word:
                     params["parameters"]["smiles"] = word
                     break
-            params["parameters"]["threshold"] = 0.7  # Default threshold
+            
+            # Add fingerprint parameters
+            params["parameters"]["radius"] = radius
+            params["parameters"]["n_bits"] = n_bits
+            
+            # Extract threshold if specified
+            if "threshold" in text:
+                for word in text.split():
+                    try:
+                        value = float(word)
+                        if 0 <= value <= 1:
+                            params["parameters"]["threshold"] = value
+                            break
+                    except ValueError:
+                        continue
+            else:
+                params["parameters"]["threshold"] = 0.7  # Default threshold
             
         else:
             # Default to complete pipeline
@@ -104,6 +135,8 @@ class NaturalLanguageInterface:
             params["parameters"] = {
                 "uniprot_ids": [],
                 "smiles": "",
+                "radius": radius,
+                "n_bits": n_bits,
                 "threshold": 0.7
             }
         

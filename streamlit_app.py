@@ -83,6 +83,10 @@ def render_traditional_interface():
     """Render the traditional interface with AI enhancements"""
     st.subheader("Traditional Analysis Interface")
     
+    # Initialize session state for heteroatom results if not exists
+    if 'heteroatom_results' not in st.session_state:
+        st.session_state.heteroatom_results = None
+    
     analysis_type = st.selectbox(
         "Analysis Type",
         ["🔍 Heteroatom Extraction", "🧪 Similarity Analysis", "📊 Complete Pipeline"]
@@ -110,15 +114,37 @@ def render_traditional_interface():
                     st.error(f"Error: {results['error']}")
                 else:
                     st.success("✅ Analysis complete!")
-                    st.session_state.last_heteroatom_results = results["results"]
+                    # Store in session state
+                    st.session_state.heteroatom_results = results["results"]
                     st.write(results["results"])
     
     elif analysis_type == "🧪 Similarity Analysis":
         st.subheader("Similarity Analysis")
         
-        if not hasattr(st.session_state, 'last_heteroatom_results'):
+        # Check for heteroatom results in session state
+        if st.session_state.heteroatom_results is None:
             st.warning("⚠️ Please run heteroatom extraction first")
             return
+        
+        # Morgan fingerprint parameters
+        col1, col2 = st.columns(2)
+        with col1:
+            radius = st.slider(
+                "Morgan Fingerprint Radius",
+                min_value=1,
+                max_value=4,
+                value=2,
+                help="💡 Radius parameter for Morgan fingerprint generation"
+            )
+        with col2:
+            n_bits = st.slider(
+                "Number of Bits",
+                min_value=512,
+                max_value=4096,
+                value=2048,
+                step=512,
+                help="💡 Number of bits in Morgan fingerprint"
+            )
         
         smiles_input = st.text_area(
             "SMILES String",
@@ -136,19 +162,15 @@ def render_traditional_interface():
         if st.button("🔍 Analyze Similarity"):
             if smiles_input:
                 with st.spinner("🧪 Analyzing similarity..."):
-                    results = st.session_state.agent.execute_action(
-                        "analyze_similarity",
-                        {
-                            "smiles": smiles_input,
-                            "threshold": threshold
-                        }
+                    # Create new analyzer with custom parameters
+                    analyzer = MolecularSimilarityAnalyzer(radius=radius, n_bits=n_bits)
+                    results = analyzer.analyze_similarity(
+                        target_smiles=smiles_input,
+                        heteroatom_df=st.session_state.heteroatom_results,
+                        min_similarity=threshold
                     )
-                    
-                if "error" in results:
-                    st.error(f"Error: {results['error']}")
-                else:
                     st.success("✅ Analysis complete!")
-                    st.write(results["results"])
+                    st.write(results)
     
     else:  # Complete Pipeline
         st.subheader("Complete Pipeline Analysis")
