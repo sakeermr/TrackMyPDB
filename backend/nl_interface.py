@@ -1699,9 +1699,9 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
                 hovertemplate='<b>%{text}</b><br>Similarity: %{y:.3f}<extra></extra>'
             ))
             fig_scatter.update_layout(
-                title="Top 10 Similar Compounds",
+                title="Top 10 Similarity Scores",
                 xaxis_title="Rank",
-                yaxis_title="Tanimoto Similarity",
+                yaxis_title="Similarity",
                 xaxis=dict(tickvals=list(range(len(top_results))), ticktext=[str(i+1) for i in range(len(top_results))]),
                 yaxis=dict(range=[0, 1]),
                 margin=dict(t=30, b=30, l=40, r=10)
@@ -1738,3 +1738,552 @@ I'll ask clarifying questions to guide you through the hybrid process!"""
         
         except Exception as e:
             st.warning(f"Error generating downloads: {e}")
+
+    def render_manual_mode_interface(self):
+        """
+        Mode 1: Manual Mode - OPTIMIZED real-time PDB Data Bank fetching ONLY
+        """
+        st.header("🔧 Manual Mode - OPTIMIZED Real-Time PDB Analysis")
+        
+        st.markdown("""
+        **OPTIMIZED Manual Mode Features:**
+        - 🚀 **Parallel PDB downloads** for faster processing
+        - 🔄 **Batch heteroatom processing** with optimized algorithms  
+        - ⚡ **Reduced API call delays** while respecting rate limits
+        - 📊 **Real-time progress tracking** with detailed metrics
+        - 🎯 **Three processing stages**: Heteroatom → Similarity → Combined Pipeline
+        - 💾 **Automatic session management** for better performance
+        """)
+        
+        st.success("⚡ **OPTIMIZED MODE**: Fastest real-time PDB processing with parallel operations!")
+        
+        # Performance Settings
+        with st.expander("⚡ Performance Configuration", expanded=False):
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                max_workers = st.slider("Parallel Downloads:", 2, 10, 5, help="Number of simultaneous PDB downloads")
+                batch_size = st.slider("Processing Batch Size:", 10, 100, 50, help="Molecules processed per batch")
+            
+            with col2:
+                api_delay = st.slider("API Delay (seconds):", 0.1, 1.0, 0.1, 0.1, help="Delay between API calls")
+                timeout_setting = st.slider("Request Timeout (seconds):", 10, 60, 15, help="Network timeout duration")
+            
+            with col3:
+                enable_cache = st.checkbox("Enable Caching", value=True, help="Cache results for faster re-runs")
+                show_detailed_logs = st.checkbox("Detailed Logging", value=False, help="Show detailed processing logs")
+
+        # Input Configuration Section
+        with st.expander("📋 OPTIMIZED Input Configuration", expanded=True):
+            col1, col2 = st.columns([3, 2])
+            
+            with col1:
+                st.subheader("🧬 Real-Time Molecular Inputs")
+                
+                # UniProt IDs input with suggestions
+                uniprot_input = st.text_area(
+                    "UniProt IDs (comma-separated) - OPTIMIZED FETCHING:",
+                    placeholder="P21554, P18031, P34972",
+                    help="Enter UniProt IDs for optimized real-time PDB structure fetching",
+                    height=100
+                )
+                
+                # Quick UniProt suggestions
+                st.info("💡 **Quick Suggestions**: P21554 (ABCC1), P18031 (PTPN1), P34972 (CNR2)")
+                
+                # SMILES input with validation
+                target_smiles = st.text_input(
+                    "Target SMILES Structure for Optimized Analysis:",
+                    placeholder="CCO, c1ccccc1, CC(=O)O",
+                    help="Enter SMILES for optimized similarity analysis"
+                )
+                
+                # SMILES validation
+                if target_smiles:
+                    if self._validate_smiles(target_smiles):
+                        st.success("✅ Valid SMILES structure detected")
+                    else:
+                        st.warning("⚠️ SMILES validation failed - please check structure")
+            
+            with col2:
+                st.subheader("⚙️ Optimized Analysis Parameters")
+                
+                # Optimized parameter configuration
+                radius = st.slider("Morgan Radius:", 1, 4, 2, help="Fingerprint radius - optimized default")
+                n_bits = st.selectbox("Bit-vector Length:", [1024, 2048, 4096], index=1, help="Optimized for speed vs accuracy")
+                threshold = st.slider("Tanimoto Threshold:", 0.0, 1.0, 0.7, 0.05, help="Similarity cutoff")
+                
+                col2a, col2b = st.columns(2)
+                with col2a:
+                    fp_type = st.selectbox("Fingerprint Type:", ["morgan", "maccs", "atompair"])
+                with col2b:
+                    metric = st.selectbox("Similarity Metric:", ["tanimoto", "dice", "cosine"])
+        
+        # Processing Stage Selection with time estimates
+        st.subheader("🎯 Optimized Analysis Stage Selection")
+        
+        # Estimate processing time
+        if uniprot_input:
+            uniprot_count = len([uid.strip() for uid in uniprot_input.split(',') if uid.strip()])
+            estimated_time = self._estimate_processing_time(uniprot_count)
+            st.info(f"⏱️ **Estimated Processing Time**: ~{estimated_time} minutes for {uniprot_count} UniProt IDs")
+        
+        # Horizontal layout for analysis options
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            hetero_only = st.button(
+                "⚡ Heteroatom\nExtraction Only",
+                help="Extract heteroatoms from UniProt IDs only",
+                use_container_width=True,
+                type="secondary"
+            )
+        
+        with col2:
+            similarity_only = st.button(
+                "🎯 Similarity\nAnalysis Only",
+                help="Perform similarity analysis with existing data",
+                use_container_width=True,
+                type="secondary"
+            )
+        
+        with col3:
+            combined_pipeline = st.button(
+                "🚀 Combined\nPipeline",
+                help="Complete workflow: Heteroatom + Similarity",
+                use_container_width=True,
+                type="secondary"
+            )
+        
+        # Handle button clicks
+        if hetero_only:
+            if not uniprot_input.strip():
+                st.error("❌ UniProt IDs required for heteroatom extraction")
+            else:
+                self._execute_optimized_heteroatom_extraction(uniprot_input)
+        
+        elif similarity_only:
+            if not target_smiles.strip():
+                st.error("❌ Target SMILES required for similarity analysis")
+            else:
+                self._execute_optimized_similarity_only(target_smiles, "🔄 Use session data (from previous extraction)", None, radius, n_bits, threshold)
+        
+        elif combined_pipeline:
+            if not uniprot_input.strip() or not target_smiles.strip():
+                st.error("❌ Both UniProt IDs and target SMILES required for combined pipeline")
+            else:
+                self._execute_optimized_combined_pipeline(uniprot_input, target_smiles, radius, n_bits, threshold, fp_type, metric)
+
+    def render_ai_powered_mode_interface(self):
+        """
+        Mode 2: AI-Powered Mode - Interactive chatbot with step-by-step guidance
+        """
+        st.header("🤖 AI-Powered Mode - Interactive Molecular Analysis")
+        
+        st.markdown("""
+        **AI-Powered Mode Features:**
+        - 🧠 **Intelligent conversation** with Google Gemini AI
+        - ❓ **Step-by-step guidance** through analysis process
+        - 📊 **Hybrid data sources** (local database + real-time PDB)
+        - ✅ **User confirmation** at each step for transparency
+        - 🎯 **Smart parameter optimization** based on your needs
+        """)
+        
+        # AI Status Display
+        if self.gemini_agent and self.gemini_agent.is_available():
+            st.success("✅ **AI READY**: Google Gemini is online and ready to assist!")
+        else:
+            st.warning("⚠️ **AI FALLBACK MODE**: Using basic text processing (Gemini not available)")
+        
+        # Data source configuration
+        with st.expander("📊 Hybrid Data Sources Configuration", expanded=False):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                use_local_db = st.checkbox("📁 Use Local Database", value=True, 
+                                         help=f"Access {len(self.local_database)} pre-processed PDB records")
+                if use_local_db and not self.local_database.empty:
+                    st.info(f"✅ Local database loaded: {len(self.local_database)} records")
+                elif use_local_db:
+                    st.warning("⚠️ Local database not available")
+            
+            with col2:
+                use_realtime = st.checkbox("🌐 Use Real-Time PDB Fetching", value=True,
+                                         help="Fetch fresh data directly from PDB Data Bank")
+                if use_realtime:
+                    st.info("✅ Real-time PDB fetching enabled")
+        
+        # Chat Interface
+        st.subheader("💬 AI Assistant Chat")
+        
+        # Display chat history
+        if st.session_state.chat_history:
+            with st.container():
+                for i, (role, message) in enumerate(st.session_state.chat_history):
+                    if role == "user":
+                        st.markdown(f"**👤 You:** {message}")
+                    else:
+                        st.markdown(f"**🤖 AI Assistant:** {message}")
+                    
+                    if i < len(st.session_state.chat_history) - 1:
+                        st.markdown("---")
+        
+        # Chat input
+        user_message = st.chat_input("Ask me about molecular analysis, provide SMILES/UniProt IDs, or describe what you want to analyze...")
+        
+        if user_message:
+            # Add user message to history
+            st.session_state.chat_history.append(("user", user_message))
+            
+            # Generate AI response
+            ai_response = self._generate_ai_guided_response(user_message, use_local_db, use_realtime)
+            
+            # Add AI response to history
+            st.session_state.chat_history.append(("ai", ai_response))
+            
+            # Rerun to display new messages
+            st.rerun()
+        
+        # Clear chat button
+        if st.button("🗑️ Clear Chat History"):
+            st.session_state.chat_history = []
+            st.session_state.current_analysis_state = {}
+            st.rerun()
+        
+        # Quick start examples
+        st.subheader("🚀 Quick Start Examples")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("🧪 Example: SMILES Analysis", use_container_width=True):
+                example_message = "Analyze this SMILES: CCO and find similar compounds"
+                st.session_state.chat_history.append(("user", example_message))
+                ai_response = self._generate_ai_guided_response(example_message, use_local_db, use_realtime)
+                st.session_state.chat_history.append(("ai", ai_response))
+                st.rerun()
+        
+        with col2:
+            if st.button("🔬 Example: Protein Analysis", use_container_width=True):
+                example_message = "Extract heteroatoms from UniProt P21554"
+                st.session_state.chat_history.append(("user", example_message))
+                ai_response = self._generate_ai_guided_response(example_message, use_local_db, use_realtime)
+                st.session_state.chat_history.append(("ai", ai_response))
+                st.rerun()
+        
+        with col3:
+            if st.button("🚀 Example: Complete Pipeline", use_container_width=True):
+                example_message = "Complete analysis of SMILES CCO with proteins P21554, P18031"
+                st.session_state.chat_history.append(("user", example_message))
+                ai_response = self._generate_ai_guided_response(example_message, use_local_db, use_realtime)
+                st.session_state.chat_history.append(("ai", ai_response))
+                st.rerun()
+
+    def render_fully_autonomous_mode_interface(self):
+        """
+        Mode 3: Fully Autonomous Mode - AI handles everything automatically
+        """
+        st.header("🚀 Fully Autonomous Mode - AI-Driven Analysis")
+        
+        st.markdown("""
+        **Fully Autonomous Mode Features:**
+        - 🤖 **Complete AI automation** with minimal user intervention
+        - 🧠 **Intelligent parameter optimization** based on your input
+        - 📊 **Hybrid data processing** with smart source selection
+        - 📋 **Comprehensive reporting** with scientific insights
+        - 🎯 **Adaptive analysis** that learns from your preferences
+        """)
+        
+        # AI Status
+        if self.gemini_agent and self.gemini_agent.is_available():
+            st.success("✅ **AUTONOMOUS AI READY**: Gemini will handle all analysis decisions!")
+        else:
+            st.warning("⚠️ **LIMITED AUTONOMOUS MODE**: Basic automation without AI insights")
+        
+        # Input section
+        st.subheader("📝 Analysis Input")
+        
+        user_input = st.text_area(
+            "Describe your molecular analysis needs:",
+            placeholder="Examples:\n- 'Analyze SMILES CCO and find similar compounds in proteins P21554, P18031'\n- 'Complete drug discovery pipeline for aspirin-like compounds'\n- 'Heteroatom extraction and similarity search for diabetes targets'",
+            height=100,
+            help="Describe what you want to analyze. The AI will automatically detect SMILES, UniProt IDs, and determine the best analysis approach."
+        )
+        
+        # Autonomous configuration
+        with st.expander("⚙️ Autonomous Configuration", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.subheader("🎛️ Analysis Parameters")
+                threshold = st.slider("Similarity Threshold:", 0.1, 0.9, 0.7, 0.1, 
+                                    help="AI will optimize around this value")
+                comprehensive = st.checkbox("Comprehensive Report", value=True,
+                                          help="Generate detailed scientific analysis")
+                visualizations = st.checkbox("Generate Visualizations", value=True,
+                                            help="Create charts and graphs automatically")
+            
+            with col2:
+                st.subheader("⚡ Processing Options")
+                processing_speed = st.selectbox("Processing Speed:", 
+                                               ["Fast", "Balanced", "Thorough"],
+                                               index=1,
+                                               help="AI will optimize parameters accordingly")
+                auto_download = st.checkbox("Auto-Download Results", value=False,
+                                          help="Automatically generate download files")
+                result_detail = st.selectbox("Result Detail Level:",
+                                           ["Summary", "Standard", "Detailed"],
+                                           index=1)
+            
+            with col3:
+                st.subheader("📊 Data Sources")
+                use_local_data = st.checkbox("Local Database", value=True,
+                                           help=f"Use {len(self.local_database)} local records")
+                use_realtime_data = st.checkbox("Real-Time PDB", value=True,
+                                              help="Fetch live data from PDB")
+                data_priority = st.selectbox("Data Priority:",
+                                           ["Local First", "Real-Time First", "Hybrid"],
+                                           index=2,
+                                           help="AI data source selection strategy")
+        
+        # Execution button
+        if st.button("🚀 Start Autonomous Analysis", type="primary", use_container_width=True):
+            if not user_input.strip():
+                st.error("❌ Please provide analysis input for the autonomous system")
+            else:
+                self._execute_autonomous_hybrid_analysis(
+                    user_input, threshold, comprehensive, visualizations,
+                    auto_download, processing_speed, result_detail,
+                    use_local_data, use_realtime_data, data_priority
+                )
+        
+        # Recent autonomous analyses
+        if "autonomous_history" not in st.session_state:
+            st.session_state.autonomous_history = []
+        
+        if st.session_state.autonomous_history:
+            st.subheader("📜 Recent Autonomous Analyses")
+            for i, analysis in enumerate(st.session_state.autonomous_history[-3:]):  # Show last 3
+                with st.expander(f"Analysis {i+1}: {analysis.get('input', '')[:50]}..."):
+                    st.write(f"**Input:** {analysis.get('input', 'N/A')}")
+                    st.write(f"**Timestamp:** {analysis.get('timestamp', 'N/A')}")
+                    st.write(f"**Status:** {analysis.get('status', 'N/A')}")
+                    if analysis.get('results'):
+                        st.write(f"**Results:** {analysis['results']}")
+
+    def _validate_smiles(self, smiles: str) -> bool:
+        """Validate SMILES structure"""
+        try:
+            from rdkit import Chem
+            mol = Chem.MolFromSmiles(smiles.strip())
+            return mol is not None
+        except:
+            return False
+
+    def _estimate_processing_time(self, uniprot_count: int) -> str:
+        """Estimate processing time based on UniProt count"""
+        if uniprot_count <= 2:
+            return "2-5"
+        elif uniprot_count <= 5:
+            return "5-10"
+        elif uniprot_count <= 10:
+            return "10-20"
+        else:
+            return f"{uniprot_count * 2}-{uniprot_count * 4}"
+
+    def _execute_optimized_heteroatom_extraction(self, uniprot_input: str):
+        """Execute optimized heteroatom extraction"""
+        uniprot_ids = [uid.strip() for uid in uniprot_input.split(',') if uid.strip()]
+        
+        st.subheader("⚡ Optimized Heteroatom Extraction")
+        
+        # Execute extraction
+        results_df = self.realtime_extractor.extract_heteroatoms_realtime_optimized(uniprot_ids)
+        
+        if not results_df.empty:
+            # Store results for later use
+            st.session_state["heteroatom_results"] = results_df
+            self._display_heteroatom_results(results_df, "manual-optimized")
+        else:
+            st.warning("⚠️ No heteroatoms found in the specified proteins")
+
+    def _execute_optimized_similarity_only(self, target_smiles: str, data_source: str, data: pd.DataFrame, 
+                                         radius: int, n_bits: int, threshold: float):
+        """Execute optimized similarity analysis only"""
+        st.subheader("🎯 Optimized Similarity Analysis")
+        
+        # Determine data source
+        if "session data" in data_source.lower():
+            if "heteroatom_results" in st.session_state:
+                analysis_data = st.session_state["heteroatom_results"]
+                st.info("📊 Using heteroatom results from previous extraction")
+            else:
+                st.error("❌ No session data available. Please run heteroatom extraction first.")
+                return
+        else:
+            analysis_data = data
+        
+        # Configure analyzer
+        self.realtime_similarity.radius = radius
+        self.realtime_similarity.n_bits = n_bits
+        
+        # Perform analysis
+        similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
+            target_smiles=target_smiles,
+            heteroatom_df=analysis_data,
+            min_similarity=threshold
+        )
+        
+        if not similarity_results.empty:
+            self._display_similarity_results(similarity_results, target_smiles, "manual-optimized")
+        else:
+            st.warning("⚠️ No similar compounds found with the specified threshold")
+
+    def _execute_optimized_combined_pipeline(self, uniprot_input: str, target_smiles: str, 
+                                           radius: int, n_bits: int, threshold: float, fp_type: str, metric: str):
+        """Execute optimized combined pipeline"""
+        st.subheader("🚀 Optimized Combined Pipeline")
+        
+        # Parse UniProt IDs
+        uniprot_ids = [uid.strip() for uid in uniprot_input.split(',') if uid.strip()]
+        
+        # Step 1: Heteroatom extraction
+        st.info("🔬 Step 1: Extracting heteroatoms...")
+        heteroatom_results = self.realtime_extractor.extract_heteroatoms_realtime_optimized(uniprot_ids)
+        
+        if heteroatom_results.empty:
+            st.error("❌ No heteroatoms found. Cannot proceed with similarity analysis.")
+            return
+        
+        # Store results
+        st.session_state["heteroatom_results"] = heteroatom_results
+        
+        # Step 2: Similarity analysis
+        st.info("🎯 Step 2: Analyzing molecular similarities...")
+        
+        # Configure analyzer
+        self.realtime_similarity.radius = radius
+        self.realtime_similarity.n_bits = n_bits
+        
+        similarity_results = self.realtime_similarity.analyze_similarity_realtime_optimized(
+            target_smiles=target_smiles,
+            heteroatom_df=heteroatom_results,
+            min_similarity=threshold
+        )
+        
+        # Display results
+        st.subheader("📊 Combined Pipeline Results")
+        
+        # Heteroatom results
+        with st.expander("🔬 Heteroatom Extraction Results", expanded=True):
+            self._display_heteroatom_results(heteroatom_results, "combined-pipeline")
+        
+        # Similarity results
+        if not similarity_results.empty:
+            with st.expander("🎯 Similarity Analysis Results", expanded=True):
+                self._display_similarity_results(similarity_results, target_smiles, "combined-pipeline")
+        else:
+            st.warning("⚠️ No similar compounds found with the specified threshold")
+
+    def _generate_ai_guided_response(self, user_message: str, use_local_db: bool, use_realtime: bool) -> str:
+        """Generate AI-guided response for the chat interface"""
+        # Update parameters in current analysis state
+        if "current_analysis_state" not in st.session_state:
+            st.session_state.current_analysis_state = {}
+        
+        st.session_state.current_analysis_state.update({
+            "use_local_db": use_local_db,
+            "use_realtime": use_realtime
+        })
+        
+        # Use the existing handle_user_input method
+        return self.handle_user_input(user_message)
+
+    def _display_heteroatom_results(self, results_df: pd.DataFrame, analysis_type: str):
+        """Display heteroatom extraction results"""
+        if results_df.empty:
+            st.warning("⚠️ No heteroatom results to display")
+            return
+        
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Records", len(results_df))
+        with col2:
+            st.metric("Unique PDBs", results_df['PDB_ID'].nunique())
+        with col3:
+            st.metric("Unique Heteroatoms", results_df['Heteroatom_Code'].nunique())
+        with col4:
+            with_smiles = len(results_df[results_df['SMILES'] != ''])
+            st.metric("With SMILES", with_smiles)
+        
+        # Results table
+        st.subheader("📋 Detailed Results")
+        
+        # Filter options
+        col1, col2 = st.columns(2)
+        with col1:
+            filter_pdb = st.selectbox("Filter by PDB:", ["All"] + list(results_df['PDB_ID'].unique()))
+        with col2:
+            filter_hetero = st.selectbox("Filter by Heteroatom:", ["All"] + list(results_df['Heteroatom_Code'].unique()))
+        
+        # Apply filters
+        filtered_df = results_df.copy()
+        if filter_pdb != "All":
+            filtered_df = filtered_df[filtered_df['PDB_ID'] == filter_pdb]
+        if filter_hetero != "All":
+            filtered_df = filtered_df[filtered_df['Heteroatom_Code'] == filter_hetero]
+        
+        # Display filtered results
+        st.dataframe(filtered_df, use_container_width=True)
+        
+        # Download button
+        csv = results_df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Heteroatom Results CSV",
+            data=csv,
+            file_name=f"heteroatom_results_{analysis_type}.csv",
+            mime="text/csv"
+        )
+
+    def _display_similarity_results(self, results_df: pd.DataFrame, target_smiles: str, analysis_type: str):
+        """Display similarity analysis results"""
+        if results_df.empty:
+            st.warning("⚠️ No similarity results to display")
+            return
+        
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Similar Compounds", len(results_df))
+        with col2:
+            st.metric("Best Similarity", f"{results_df['Tanimoto_Similarity'].max():.3f}")
+        with col3:
+            st.metric("Average Similarity", f"{results_df['Tanimoto_Similarity'].mean():.3f}")
+        with col4:
+            high_sim = len(results_df[results_df['Tanimoto_Similarity'] >= 0.8])
+            st.metric("High Similarity (≥0.8)", high_sim)
+        
+        # Target molecule info
+        st.info(f"🎯 **Target SMILES:** `{target_smiles}`")
+        
+        # Results table
+        st.subheader("📋 Similarity Results")
+        
+        # Sort by similarity (highest first)
+        display_df = results_df.sort_values('Tanimoto_Similarity', ascending=False)
+        
+        # Add ranking
+        display_df = display_df.reset_index(drop=True)
+        display_df.index += 1
+        
+        st.dataframe(display_df, use_container_width=True)
+        
+        # Download button
+        csv = results_df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Similarity Results CSV",
+            data=csv,
+            file_name=f"similarity_results_{analysis_type}.csv",
+            mime="text/csv"
+        )
