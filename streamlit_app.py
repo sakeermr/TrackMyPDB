@@ -28,7 +28,7 @@ import hashlib
 sys.path.append(os.path.join(os.path.dirname(__file__), 'backend'))
 
 # Import backend modules
-from backend.heteroatom_extractor import HeteroatomExtractor
+from backend.heteroatom_extractor import OptimizedHeteroatomExtractor
 from backend.agent_core import TrackMyPDBAgent
 from backend.nl_interface import NaturalLanguageInterface
 
@@ -79,7 +79,7 @@ if "agent" not in st.session_state:
     st.session_state.agent = TrackMyPDBAgent()
 
 if "heteroatom_extractor" not in st.session_state:
-    st.session_state.heteroatom_extractor = HeteroatomExtractor()
+    st.session_state.heteroatom_extractor = OptimizedHeteroatomExtractor()
 
 if "local_database" not in st.session_state:
     st.session_state.local_database = load_local_pdb_database()
