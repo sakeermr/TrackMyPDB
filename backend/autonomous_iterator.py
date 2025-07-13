@@ -4,6 +4,7 @@ Autonomous Iterator for TrackMyPDB
 
 Intelligent iteration controller that autonomously processes batches of heteroatom data
 with AI guidance, adaptive learning, and intelligent stopping conditions.
+Now integrated with the comprehensive heteroatom database.
 """
 
 import asyncio
@@ -22,6 +23,10 @@ from .adaptive_batch_processor import AdaptiveBatchProcessor
 from .agentic_layer import TrackMyPDBAgenticInterface, AgentMode, AnalysisType
 from .gemini_agent import GeminiAgent
 from .performance_monitor import PerformanceMonitor
+from .comprehensive_database_loader import (
+    ComprehensiveHeteroatomDatabase, get_comprehensive_database,
+    load_heteroatom_data_for_ai
+)
 
 class IterationMode(Enum):
     """Iteration modes for autonomous processing"""
@@ -70,16 +75,29 @@ class IterationResult:
 class AutonomousIterator:
     """
     Autonomous iterator for continuous molecular analysis
+    Now integrated with comprehensive heteroatom database
     """
     
     def __init__(self, 
-                 data_source: pd.DataFrame,
-                 agentic_interface: TrackMyPDBAgenticInterface,
+                 data_source: Optional[pd.DataFrame] = None,
+                 agentic_interface: Optional[TrackMyPDBAgenticInterface] = None,
                  gemini_agent: Optional[GeminiAgent] = None,
-                 config: Optional[IterationConfig] = None):
+                 config: Optional[IterationConfig] = None,
+                 use_comprehensive_db: bool = True):
         
-        self.data_source = data_source.copy()
-        self.agentic_interface = agentic_interface
+        # Initialize comprehensive database if requested
+        self.use_comprehensive_db = use_comprehensive_db
+        self.comprehensive_db = None
+        
+        if use_comprehensive_db:
+            self.comprehensive_db = get_comprehensive_database()
+            if data_source is None:
+                # Load data from comprehensive database
+                data_source = load_heteroatom_data_for_ai(max_compounds=10000)
+                logging.info(f"📊 Loaded {len(data_source):,} compounds from comprehensive database")
+        
+        self.data_source = data_source.copy() if data_source is not None else pd.DataFrame()
+        self.agentic_interface = agentic_interface or TrackMyPDBAgenticInterface()
         self.gemini_agent = gemini_agent
         self.config = config or IterationConfig()
         
@@ -104,6 +122,11 @@ class AutonomousIterator:
         
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
+        
+        # Log initialization
+        self.logger.info(f"🤖 AutonomousIterator initialized with {len(self.data_source):,} compounds")
+        if self.use_comprehensive_db:
+            self.logger.info("🗃️ Using comprehensive heteroatom database")
 
     async def start_autonomous_iteration(self, 
                                        target_smiles: Optional[str] = None,
@@ -748,3 +771,96 @@ async def run_autonomous_analysis(data_file_path: str,
     results = await iterator.start_autonomous_iteration(target_smiles=target_smiles)
     
     return results
+
+# Enhanced utility functions for comprehensive database integration
+
+async def create_autonomous_iterator_with_database(
+    selection_criteria: Optional[Dict[str, Any]] = None,
+    agentic_interface: Optional[TrackMyPDBAgenticInterface] = None,
+    gemini_agent: Optional[GeminiAgent] = None,
+    **config_kwargs) -> AutonomousIterator:
+    """
+    Create autonomous iterator with comprehensive database integration
+    """
+    
+    config = IterationConfig(**config_kwargs)
+    
+    return AutonomousIterator(
+        data_source=None,  # Will be loaded from comprehensive database
+        agentic_interface=agentic_interface,
+        gemini_agent=gemini_agent,
+        config=config,
+        use_comprehensive_db=True
+    )
+
+async def run_smart_autonomous_analysis(
+    selection_criteria: Optional[Dict[str, Any]] = None,
+    target_smiles: Optional[str] = None,
+    max_iterations: int = 50,
+    time_limit_minutes: int = 30,
+    batch_size: int = 100) -> Dict[str, Any]:
+    """
+    High-level function to run smart autonomous analysis using comprehensive database
+    """
+    
+    # Create components
+    agentic_interface = TrackMyPDBAgenticInterface()
+    
+    try:
+        gemini_agent = GeminiAgent()
+    except:
+        gemini_agent = None
+        logging.warning("Gemini agent not available - running without AI guidance")
+    
+    # Create iterator with database integration
+    iterator = await create_autonomous_iterator_with_database(
+        selection_criteria=selection_criteria,
+        agentic_interface=agentic_interface,
+        gemini_agent=gemini_agent,
+        max_iterations=max_iterations,
+        max_time_minutes=time_limit_minutes,
+        batch_size=batch_size,
+        mode=IterationMode.AI_GUIDED,
+        enable_ai_guidance=gemini_agent is not None
+    )
+    
+    # Get database insights for optimization
+    db_insights = await iterator.get_database_insights()
+    if db_insights:
+        logging.info(f"📊 Database insights: {db_insights.get('processing_recommendations', [])}")
+    
+    # Run smart analysis
+    results = await iterator.start_autonomous_iteration_with_smart_selection(
+        selection_criteria=selection_criteria,
+        target_smiles=target_smiles
+    )
+    
+    # Export results back to database
+    export_path = await iterator.export_results_to_database(results)
+    if export_path:
+        results['export_path'] = export_path
+    
+    return results
+
+async def run_comprehensive_database_analysis(
+    heteroatom_filter: Optional[str] = None,
+    max_compounds: int = 10000,
+    require_smiles: bool = True) -> Dict[str, Any]:
+    """
+    Run analysis on comprehensive database with specific filters
+    """
+    
+    selection_criteria = {
+        'has_smiles': require_smiles,
+        'max_compounds': max_compounds,
+        'diversity_target': True
+    }
+    
+    if heteroatom_filter:
+        selection_criteria['heteroatom_codes'] = [heteroatom_filter]
+    
+    return await run_smart_autonomous_analysis(
+        selection_criteria=selection_criteria,
+        max_iterations=min(50, max_compounds // 100),
+        batch_size=100
+    )

@@ -1,6 +1,7 @@
 """
 Agentic Layer Architecture for TrackMyPDB
 Integrates AI capabilities with existing Morgan and Tanimoto analysis
+Now integrated with comprehensive heteroatom database
 """
 
 import asyncio
@@ -14,6 +15,15 @@ import time
 import logging
 from datetime import datetime
 import os
+
+# Import comprehensive database loader
+try:
+    from .comprehensive_database_loader import (
+        get_comprehensive_database, load_heteroatom_data_for_ai
+    )
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
 
 # Check for RDKit availability
 try:
@@ -118,13 +128,16 @@ class BaseAgent(ABC):
             return f"AI analysis failed: {str(e)}"
 
 class MorganSimilarityAgent(BaseAgent):
-    """Enhanced Morgan fingerprint similarity agent"""
+    """Enhanced Morgan fingerprint similarity agent with comprehensive database integration"""
     
     def __init__(self, gemini_api_key: Optional[str] = None):
         super().__init__("Morgan Similarity Agent", gemini_api_key)
+        self.comprehensive_db = None
+        if DATABASE_AVAILABLE:
+            self.comprehensive_db = get_comprehensive_database()
         
     async def analyze(self, request: AnalysisRequest) -> AnalysisResult:
-        """Perform Morgan similarity analysis"""
+        """Perform Morgan similarity analysis using comprehensive database"""
         start_time = time.time()
         
         if not RDKIT_AVAILABLE:
@@ -144,6 +157,7 @@ class MorganSimilarityAgent(BaseAgent):
             radius = request.parameters.get('radius', 2)
             n_bits = request.parameters.get('n_bits', 2048)
             threshold = request.parameters.get('threshold', 0.2)
+            max_compounds = request.parameters.get('max_compounds', 1000)
             heteroatom_data = request.parameters.get('heteroatom_data')
             
             # Convert SMILES to molecule
@@ -156,14 +170,72 @@ class MorganSimilarityAgent(BaseAgent):
                 target_mol, radius, nBits=n_bits
             )
             
+            # Get data source - prioritize comprehensive database
+            if heteroatom_data is None and self.comprehensive_db is not None:
+                # Load compounds with SMILES from comprehensive database
+                logging.info("🗃️ Loading compounds from comprehensive database for Morgan analysis")
+                heteroatom_data = self.comprehensive_db.get_compounds_with_smiles(limit=max_compounds)
+                
+                if heteroatom_data.empty:
+                    logging.warning("No compounds with SMILES found in comprehensive database")
+                else:
+                    logging.info(f"📊 Loaded {len(heteroatom_data):,} compounds for Morgan similarity analysis")
+            
             # Calculate similarities
             similarities = []
+            processed_count = 0
+            error_count = 0
             
-            if heteroatom_data is not None and isinstance(heteroatom_data, pd.DataFrame):
-                # Use actual heteroatom data
+            if heteroatom_data is not None and isinstance(heteroatom_data, pd.DataFrame) and not heteroatom_data.empty:
+                # Use actual heteroatom data from comprehensive database
                 for idx, row in heteroatom_data.iterrows():
-                    if 'SMILES' in row and pd.notna(row['SMILES']):
-                        compound_mol = Chem.MolFromSmiles(row['SMILES'])
+                    try:
+                        if 'SMILES' in row and pd.notna(row['SMILES']):
+                            compound_mol = Chem.MolFromSmiles(row['SMILES'])
+                            if compound_mol:
+                                compound_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+                                    compound_mol, radius, nBits=n_bits
+                                )
+                                similarity = DataStructs.TanimotoSimilarity(target_fp, compound_fp)
+                                
+                                if similarity >= threshold:
+                                    similarity_data = {
+                                        'compound_id': row.get('PDB_ID', f"COMP_{idx}"),
+                                        'heteroatom_code': row.get('Heteroatom_Code', 'UNK'),
+                                        'smiles': row['SMILES'],
+                                        'chemical_name': row.get('Chemical_Name', 'Unknown'),
+                                        'similarity': similarity,
+                                        'molecular_weight': Descriptors.MolWt(compound_mol),
+                                        'logp': Crippen.MolLogP(compound_mol),
+                                        'formula': row.get('Formula', 'Unknown'),
+                                        'atom_count': row.get('Atom_Count', 0)
+                                    }
+                                    
+                                    # Add additional molecular descriptors
+                                    try:
+                                        similarity_data.update({
+                                            'hbd': Descriptors.NumHDonors(compound_mol),
+                                            'hba': Descriptors.NumHAcceptors(compound_mol),
+                                            'rotatable_bonds': Descriptors.NumRotatableBonds(compound_mol),
+                                            'tpsa': Descriptors.TPSA(compound_mol)
+                                        })
+                                    except:
+                                        pass
+                                    
+                                    similarities.append(similarity_data)
+                                
+                                processed_count += 1
+                    except Exception as e:
+                        error_count += 1
+                        if error_count <= 5:  # Log first 5 errors
+                            logging.warning(f"Error processing compound {idx}: {e}")
+            else:
+                logging.warning("No heteroatom data available, using fallback mock data")
+                # Fallback to mock data only if no real data is available
+                for i in range(50):
+                    compound_smiles = f"C{'C' * (i % 10)}O"
+                    try:
+                        compound_mol = Chem.MolFromSmiles(compound_smiles)
                         if compound_mol:
                             compound_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
                                 compound_mol, radius, nBits=n_bits
@@ -172,32 +244,16 @@ class MorganSimilarityAgent(BaseAgent):
                             
                             if similarity >= threshold:
                                 similarities.append({
-                                    'compound_id': row.get('PDB_ID', f"COMP_{idx}"),
-                                    'heteroatom_code': row.get('Heteroatom_Code', 'UNK'),
-                                    'smiles': row['SMILES'],
+                                    'compound_id': f"MOCK_{i:04d}",
+                                    'heteroatom_code': 'MOCK',
+                                    'smiles': compound_smiles,
+                                    'chemical_name': f'Mock Compound {i}',
                                     'similarity': similarity,
                                     'molecular_weight': Descriptors.MolWt(compound_mol),
                                     'logp': Crippen.MolLogP(compound_mol)
                                 })
-            else:
-                # Generate mock data for demonstration
-                for i in range(100):
-                    compound_smiles = f"C{'C' * (i % 10)}O"
-                    compound_mol = Chem.MolFromSmiles(compound_smiles)
-                    if compound_mol:
-                        compound_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(
-                            compound_mol, radius, nBits=n_bits
-                        )
-                        similarity = DataStructs.TanimotoSimilarity(target_fp, compound_fp)
-                        
-                        if similarity >= threshold:
-                            similarities.append({
-                                'compound_id': f"COMP_{i:04d}",
-                                'smiles': compound_smiles,
-                                'similarity': similarity,
-                                'molecular_weight': Descriptors.MolWt(compound_mol),
-                                'logp': Crippen.MolLogP(compound_mol)
-                            })
+                    except:
+                        continue
             
             # Sort by similarity
             similarities.sort(key=lambda x: x['similarity'], reverse=True)
@@ -206,22 +262,44 @@ class MorganSimilarityAgent(BaseAgent):
             ai_insights = ""
             if request.mode in [AgentMode.AI_ASSISTED, AgentMode.FULLY_AUTONOMOUS]:
                 ai_insights = await self.get_ai_insights(
-                    f"Morgan fingerprint similarity analysis for {request.target_smiles}",
-                    {'similarities': similarities[:10], 'parameters': request.parameters}
+                    f"Morgan fingerprint similarity analysis for {request.target_smiles} using comprehensive heteroatom database",
+                    {
+                        'similarities': similarities[:10], 
+                        'parameters': request.parameters,
+                        'database_stats': {
+                            'compounds_processed': processed_count,
+                            'errors_encountered': error_count,
+                            'similarities_found': len(similarities)
+                        }
+                    }
                 )
             
-            # Generate recommendations
+            # Generate comprehensive recommendations
             recommendations = []
             if similarities:
                 recommendations.append(f"Found {len(similarities)} similar compounds above threshold {threshold}")
                 recommendations.append(f"Top similarity score: {similarities[0]['similarity']:.3f}")
+                recommendations.append(f"Processed {processed_count:,} compounds from comprehensive database")
+                
+                # Analyze heteroatom distribution
+                heteroatom_counts = {}
+                for sim in similarities[:20]:
+                    code = sim.get('heteroatom_code', 'UNK')
+                    heteroatom_counts[code] = heteroatom_counts.get(code, 0) + 1
+                
+                if heteroatom_counts:
+                    top_heteroatoms = sorted(heteroatom_counts.items(), key=lambda x: x[1], reverse=True)[:3]
+                    recommendations.append(f"Most common heteroatom types in similar compounds: {', '.join([f'{code}({count})' for code, count in top_heteroatoms])}")
                 
                 if request.mode == AgentMode.FULLY_AUTONOMOUS:
                     recommendations.append("Consider analyzing top 10 compounds for drug-like properties")
                     recommendations.append("Suggest scaffold hopping analysis for lead optimization")
+                    recommendations.append("Recommend investigating similar heteroatom binding sites")
             else:
                 recommendations.append(f"No compounds found above similarity threshold {threshold}")
                 recommendations.append("Consider lowering the threshold or using different fingerprint parameters")
+                if processed_count > 0:
+                    recommendations.append(f"Searched through {processed_count:,} compounds in comprehensive database")
             
             execution_time = time.time() - start_time
             
@@ -231,44 +309,55 @@ class MorganSimilarityAgent(BaseAgent):
                 results={
                     'similarities': similarities,
                     'total_found': len(similarities),
+                    'compounds_processed': processed_count,
+                    'error_count': error_count,
                     'parameters_used': {
                         'radius': radius,
                         'n_bits': n_bits,
                         'threshold': threshold
                     },
+                    'database_info': {
+                        'source': 'comprehensive_database' if heteroatom_data is not None and not heteroatom_data.empty else 'mock_data',
+                        'compounds_available': len(heteroatom_data) if heteroatom_data is not None else 0
+                    },
                     'ai_insights': ai_insights
                 },
-                confidence=0.85,
+                confidence=0.85 if similarities else 0.3,
                 recommendations=recommendations,
                 metadata={
                     'analysis_time': datetime.now().isoformat(),
-                    'agent_version': "1.0.0",
-                    'mode': request.mode.value
+                    'agent_version': "2.0.0",
+                    'mode': request.mode.value,
+                    'database_integration': DATABASE_AVAILABLE
                 },
                 execution_time=execution_time
             )
             
         except Exception as e:
             execution_time = time.time() - start_time
+            logging.error(f"Morgan similarity analysis failed: {e}")
             return AnalysisResult(
                 analysis_type=AnalysisType.MORGAN_SIMILARITY,
                 success=False,
                 results={},
                 confidence=0.0,
-                recommendations=[],
+                recommendations=[f"Analysis failed: {str(e)}"],
                 metadata={},
                 execution_time=execution_time,
                 error_message=str(e)
             )
 
 class TanimotoSimilarityAgent(BaseAgent):
-    """Enhanced Tanimoto similarity agent"""
+    """Enhanced Tanimoto similarity agent with comprehensive database integration"""
     
     def __init__(self, gemini_api_key: Optional[str] = None):
         super().__init__("Tanimoto Similarity Agent", gemini_api_key)
+        self.comprehensive_db = None
+        if DATABASE_AVAILABLE:
+            self.comprehensive_db = get_comprehensive_database()
         
     async def analyze(self, request: AnalysisRequest) -> AnalysisResult:
-        """Perform Tanimoto similarity analysis"""
+        """Perform Tanimoto similarity analysis using comprehensive database"""
         start_time = time.time()
         
         if not RDKIT_AVAILABLE:
@@ -287,6 +376,7 @@ class TanimotoSimilarityAgent(BaseAgent):
             # Get parameters
             fingerprint_type = request.parameters.get('fingerprint_type', 'morgan')
             threshold = request.parameters.get('threshold', 0.3)
+            max_compounds = request.parameters.get('max_compounds', 1000)
             heteroatom_data = request.parameters.get('heteroatom_data')
             
             # Convert SMILES to molecule
@@ -302,14 +392,77 @@ class TanimotoSimilarityAgent(BaseAgent):
             else:
                 target_fp = rdMolDescriptors.GetHashedAtomPairFingerprintAsBitVect(target_mol)
             
+            # Get data source - prioritize comprehensive database
+            if heteroatom_data is None and self.comprehensive_db is not None:
+                logging.info("🗃️ Loading compounds from comprehensive database for Tanimoto analysis")
+                heteroatom_data = self.comprehensive_db.get_compounds_with_smiles(limit=max_compounds)
+                
+                if heteroatom_data.empty:
+                    logging.warning("No compounds with SMILES found in comprehensive database")
+                else:
+                    logging.info(f"📊 Loaded {len(heteroatom_data):,} compounds for Tanimoto similarity analysis")
+            
             # Calculate Tanimoto similarities
             similarities = []
+            processed_count = 0
+            error_count = 0
             
-            if heteroatom_data is not None and isinstance(heteroatom_data, pd.DataFrame):
-                # Use actual heteroatom data
+            if heteroatom_data is not None and isinstance(heteroatom_data, pd.DataFrame) and not heteroatom_data.empty:
+                # Use actual heteroatom data from comprehensive database
                 for idx, row in heteroatom_data.iterrows():
-                    if 'SMILES' in row and pd.notna(row['SMILES']):
-                        compound_mol = Chem.MolFromSmiles(row['SMILES'])
+                    try:
+                        if 'SMILES' in row and pd.notna(row['SMILES']):
+                            compound_mol = Chem.MolFromSmiles(row['SMILES'])
+                            if compound_mol:
+                                if fingerprint_type == 'morgan':
+                                    compound_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(compound_mol, 2)
+                                elif fingerprint_type == 'maccs':
+                                    compound_fp = rdMolDescriptors.GetMACCSKeysFingerprint(compound_mol)
+                                else:
+                                    compound_fp = rdMolDescriptors.GetHashedAtomPairFingerprintAsBitVect(compound_mol)
+                                
+                                tanimoto = DataStructs.TanimotoSimilarity(target_fp, compound_fp)
+                                
+                                if tanimoto >= threshold:
+                                    similarity_data = {
+                                        'compound_id': row.get('PDB_ID', f"TANI_{idx}"),
+                                        'heteroatom_code': row.get('Heteroatom_Code', 'UNK'),
+                                        'smiles': row['SMILES'],
+                                        'chemical_name': row.get('Chemical_Name', 'Unknown'),
+                                        'tanimoto_similarity': tanimoto,
+                                        'fingerprint_type': fingerprint_type,
+                                        'molecular_weight': Descriptors.MolWt(compound_mol),
+                                        'formula': row.get('Formula', 'Unknown'),
+                                        'atom_count': row.get('Atom_Count', 0)
+                                    }
+                                    
+                                    # Add drug-likeness properties
+                                    try:
+                                        similarity_data.update({
+                                            'logp': Crippen.MolLogP(compound_mol),
+                                            'hbd': Descriptors.NumHDonors(compound_mol),
+                                            'hba': Descriptors.NumHAcceptors(compound_mol),
+                                            'rotatable_bonds': Descriptors.NumRotatableBonds(compound_mol),
+                                            'tpsa': Descriptors.TPSA(compound_mol),
+                                            'aromatic_rings': Descriptors.NumAromaticRings(compound_mol)
+                                        })
+                                    except:
+                                        pass
+                                    
+                                    similarities.append(similarity_data)
+                                
+                                processed_count += 1
+                    except Exception as e:
+                        error_count += 1
+                        if error_count <= 5:
+                            logging.warning(f"Error processing compound {idx}: {e}")
+            else:
+                logging.warning("No heteroatom data available, using fallback mock data")
+                # Fallback mock data
+                for i in range(50):
+                    compound_smiles = f"C{'N' * (i % 8)}C=O"
+                    try:
+                        compound_mol = Chem.MolFromSmiles(compound_smiles)
                         if compound_mol:
                             if fingerprint_type == 'morgan':
                                 compound_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(compound_mol, 2)
@@ -322,36 +475,16 @@ class TanimotoSimilarityAgent(BaseAgent):
                             
                             if tanimoto >= threshold:
                                 similarities.append({
-                                    'compound_id': row.get('PDB_ID', f"TANI_{idx}"),
-                                    'heteroatom_code': row.get('Heteroatom_Code', 'UNK'),
-                                    'smiles': row['SMILES'],
+                                    'compound_id': f"MOCK_{i:04d}",
+                                    'heteroatom_code': 'MOCK',
+                                    'smiles': compound_smiles,
+                                    'chemical_name': f'Mock Compound {i}',
                                     'tanimoto_similarity': tanimoto,
                                     'fingerprint_type': fingerprint_type,
                                     'molecular_weight': Descriptors.MolWt(compound_mol)
                                 })
-            else:
-                # Generate mock data
-                for i in range(100):
-                    compound_smiles = f"C{'N' * (i % 8)}C=O"
-                    compound_mol = Chem.MolFromSmiles(compound_smiles)
-                    if compound_mol:
-                        if fingerprint_type == 'morgan':
-                            compound_fp = rdMolDescriptors.GetMorganFingerprintAsBitVect(compound_mol, 2)
-                        elif fingerprint_type == 'maccs':
-                            compound_fp = rdMolDescriptors.GetMACCSKeysFingerprint(compound_mol)
-                        else:
-                            compound_fp = rdMolDescriptors.GetHashedAtomPairFingerprintAsBitVect(compound_mol)
-                        
-                        tanimoto = DataStructs.TanimotoSimilarity(target_fp, compound_fp)
-                        
-                        if tanimoto >= threshold:
-                            similarities.append({
-                                'compound_id': f"TANI_{i:04d}",
-                                'smiles': compound_smiles,
-                                'tanimoto_similarity': tanimoto,
-                                'fingerprint_type': fingerprint_type,
-                                'molecular_weight': Descriptors.MolWt(compound_mol)
-                            })
+                    except:
+                        continue
             
             # Sort by similarity
             similarities.sort(key=lambda x: x['tanimoto_similarity'], reverse=True)
@@ -360,14 +493,46 @@ class TanimotoSimilarityAgent(BaseAgent):
             ai_insights = ""
             if request.mode in [AgentMode.AI_ASSISTED, AgentMode.FULLY_AUTONOMOUS]:
                 ai_insights = await self.get_ai_insights(
-                    f"Tanimoto similarity analysis using {fingerprint_type} fingerprints",
-                    {'similarities': similarities[:10], 'threshold': threshold}
+                    f"Tanimoto similarity analysis using {fingerprint_type} fingerprints on comprehensive heteroatom database",
+                    {
+                        'similarities': similarities[:10], 
+                        'threshold': threshold,
+                        'fingerprint_type': fingerprint_type,
+                        'database_stats': {
+                            'compounds_processed': processed_count,
+                            'errors_encountered': error_count,
+                            'similarities_found': len(similarities)
+                        }
+                    }
                 )
             
+            # Generate recommendations
             recommendations = [
                 f"Found {len(similarities)} compounds with Tanimoto similarity >= {threshold}",
-                f"Using {fingerprint_type} fingerprints for comparison"
+                f"Using {fingerprint_type} fingerprints for comparison",
+                f"Processed {processed_count:,} compounds from comprehensive database"
             ]
+            
+            if similarities:
+                # Analyze chemical diversity
+                formula_counts = {}
+                for sim in similarities[:20]:
+                    formula = sim.get('formula', 'Unknown')
+                    formula_counts[formula] = formula_counts.get(formula, 0) + 1
+                
+                if formula_counts:
+                    diverse_formulas = len([f for f, c in formula_counts.items() if c == 1])
+                    recommendations.append(f"Chemical diversity: {diverse_formulas} unique formulas in top 20 hits")
+                
+                # Drug-likeness assessment
+                drug_like_count = 0
+                for sim in similarities[:10]:
+                    mw = sim.get('molecular_weight', 0)
+                    logp = sim.get('logp', 0)
+                    if 150 <= mw <= 500 and -2 <= logp <= 5:
+                        drug_like_count += 1
+                
+                recommendations.append(f"Drug-likeness: {drug_like_count}/10 top compounds pass basic MW/LogP filters")
             
             execution_time = time.time() - start_time
             
@@ -376,27 +541,36 @@ class TanimotoSimilarityAgent(BaseAgent):
                 success=True,
                 results={
                     'similarities': similarities,
+                    'total_found': len(similarities),
+                    'compounds_processed': processed_count,
+                    'error_count': error_count,
                     'fingerprint_type': fingerprint_type,
                     'threshold': threshold,
+                    'database_info': {
+                        'source': 'comprehensive_database' if heteroatom_data is not None and not heteroatom_data.empty else 'mock_data',
+                        'compounds_available': len(heteroatom_data) if heteroatom_data is not None else 0
+                    },
                     'ai_insights': ai_insights
                 },
-                confidence=0.88,
+                confidence=0.88 if similarities else 0.3,
                 recommendations=recommendations,
                 metadata={
                     'analysis_time': datetime.now().isoformat(),
-                    'agent_version': "1.0.0"
+                    'agent_version': "2.0.0",
+                    'database_integration': DATABASE_AVAILABLE
                 },
                 execution_time=execution_time
             )
             
         except Exception as e:
             execution_time = time.time() - start_time
+            logging.error(f"Tanimoto similarity analysis failed: {e}")
             return AnalysisResult(
                 analysis_type=AnalysisType.TANIMOTO_SIMILARITY,
                 success=False,
                 results={},
                 confidence=0.0,
-                recommendations=[],
+                recommendations=[f"Analysis failed: {str(e)}"],
                 metadata={},
                 execution_time=execution_time,
                 error_message=str(e)
@@ -658,7 +832,7 @@ class AgenticOrchestrator:
         return report
 
 class TrackMyPDBAgenticInterface:
-    """Integration interface for TrackMyPDB agentic capabilities"""
+    """Integration interface for TrackMyPDB agentic capabilities with comprehensive database support"""
     
     def __init__(self, gemini_api_key: Optional[str] = None):
         # Try to get API key from environment if not provided
@@ -667,27 +841,35 @@ class TrackMyPDBAgenticInterface:
         
         self.orchestrator = AgenticOrchestrator(gemini_api_key)
         self.gemini_api_key = gemini_api_key
+        self.comprehensive_db = None
         
-    def get_available_analysis_types(self) -> List[AnalysisType]:
-        """Get list of available analysis types"""
-        if RDKIT_AVAILABLE:
-            return [
-                AnalysisType.MORGAN_SIMILARITY,
-                AnalysisType.TANIMOTO_SIMILARITY,
-                AnalysisType.DRUG_LIKENESS
-            ]
+        # Initialize comprehensive database
+        if DATABASE_AVAILABLE:
+            self.comprehensive_db = get_comprehensive_database()
+            logging.info("🗃️ TrackMyPDB Agentic Interface initialized with comprehensive database")
         else:
-            return []
-    
-    def get_agent_status(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all agents"""
-        status = {}
-        for analysis_type, agent in self.orchestrator.agents.items():
-            status[analysis_type.value] = {
-                'name': agent.name,
-                'ai_enabled': agent.ai_enabled,
-                'available': RDKIT_AVAILABLE
-            }
+            logging.warning("⚠️ Comprehensive database not available - using fallback modes")
+        
+    def get_database_status(self) -> Dict[str, Any]:
+        """Get status of comprehensive database integration"""
+        status = {
+            'database_available': DATABASE_AVAILABLE,
+            'database_loaded': self.comprehensive_db is not None,
+            'rdkit_available': RDKIT_AVAILABLE,
+            'gemini_available': GEMINI_AVAILABLE
+        }
+        
+        if self.comprehensive_db:
+            try:
+                # Get database statistics
+                db_summary = self.comprehensive_db.get_database_summary()
+                status.update({
+                    'database_stats': db_summary.get('database_overview', {}),
+                    'top_heteroatoms': list(db_summary.get('top_heteroatom_codes', {}).keys())[:5]
+                })
+            except Exception as e:
+                status['database_error'] = str(e)
+        
         return status
     
     async def run_comprehensive_analysis(
@@ -696,14 +878,30 @@ class TrackMyPDBAgenticInterface:
         mode: AgentMode = AgentMode.AI_ASSISTED,
         analysis_types: List[AnalysisType] = None,
         heteroatom_data: Optional[pd.DataFrame] = None,
+        use_database_auto_load: bool = True,
+        max_compounds: int = 5000,
         **kwargs
     ) -> Dict[str, Any]:
-        """Run comprehensive agentic analysis"""
+        """Run comprehensive agentic analysis with database integration"""
         
         start_time = time.time()
         
         if analysis_types is None:
             analysis_types = self.get_available_analysis_types()
+        
+        # Auto-load from comprehensive database if no data provided
+        if heteroatom_data is None and use_database_auto_load and self.comprehensive_db is not None:
+            try:
+                logging.info(f"🔄 Auto-loading {max_compounds} compounds from comprehensive database")
+                heteroatom_data = self.comprehensive_db.get_compounds_with_smiles(limit=max_compounds)
+                
+                if not heteroatom_data.empty:
+                    logging.info(f"✅ Loaded {len(heteroatom_data):,} compounds for analysis")
+                else:
+                    logging.warning("⚠️ No compounds with SMILES found in database")
+                    
+            except Exception as e:
+                logging.error(f"❌ Failed to auto-load from database: {e}")
         
         # Create analysis request
         request = AnalysisRequest(
@@ -716,6 +914,7 @@ class TrackMyPDBAgenticInterface:
                 'threshold': kwargs.get('threshold', 0.2),
                 'fingerprint_type': kwargs.get('fingerprint_type', 'morgan'),
                 'heteroatom_data': heteroatom_data,
+                'max_compounds': max_compounds,
                 **kwargs
             },
             context=kwargs.get('context')
@@ -732,40 +931,72 @@ class TrackMyPDBAgenticInterface:
         average_confidence = np.mean([r.confidence for r in results.values() if r.success])
         total_execution_time = time.time() - start_time
         
+        # Aggregate similarity results for easy access
+        all_similarities = []
+        for result in results.values():
+            if result.success and 'similarities' in result.results:
+                similarities = result.results['similarities']
+                for sim in similarities:
+                    # Add analysis type to each similarity
+                    sim_copy = sim.copy()
+                    sim_copy['analysis_type'] = result.analysis_type.value
+                    all_similarities.append(sim_copy)
+        
+        # Sort all similarities by score
+        all_similarities.sort(key=lambda x: x.get('similarity', x.get('tanimoto_similarity', 0)), reverse=True)
+        
         return {
             'results': results,
             'comprehensive_report': comprehensive_report,
+            'all_similarities': all_similarities[:100],  # Top 100 across all methods
             'analysis_summary': {
                 'target_smiles': target_smiles,
-                'mode': mode,
+                'mode': mode.value,
                 'analyses_requested': len(analysis_types),
                 'analyses_successful': successful_analyses,
                 'average_confidence': float(average_confidence) if successful_analyses > 0 else 0.0,
                 'total_execution_time': total_execution_time,
+                'total_similarities_found': len(all_similarities),
+                'database_compounds_used': len(heteroatom_data) if heteroatom_data is not None else 0,
                 'timestamp': datetime.now().isoformat()
-            }
+            },
+            'database_status': self.get_database_status()
         }
 
-# Example usage functions
-async def example_usage():
-    """Example usage of the agentic system"""
+# Enhanced example usage function
+async def example_comprehensive_analysis():
+    """Example usage of the agentic system with comprehensive database"""
     
-    # Initialize with API key (replace with actual key)
-    interface = TrackMyPDBAgenticInterface("your_gemini_api_key_here")
+    # Initialize with API key (replace with actual key or set GEMINI_API_KEY environment variable)
+    interface = TrackMyPDBAgenticInterface()
     
-    # Run analysis
+    # Check database status
+    db_status = interface.get_database_status()
+    print("Database Status:", json.dumps(db_status, indent=2))
+    
+    # Run analysis with automatic database loading
+    target_smiles = "CC(C)CC1=CC=C(C=C1)C(C)C(=O)O"  # Ibuprofen
+    
     results = await interface.run_comprehensive_analysis(
-        target_smiles="CCO",  # Ethanol
+        target_smiles=target_smiles,
         mode=AgentMode.AI_ASSISTED,
         analysis_types=[
             AnalysisType.MORGAN_SIMILARITY,
             AnalysisType.TANIMOTO_SIMILARITY,
             AnalysisType.DRUG_LIKENESS
-        ]
+        ],
+        use_database_auto_load=True,
+        max_compounds=1000,
+        threshold=0.3
     )
     
-    print("Analysis Results:")
-    print(json.dumps(results, indent=2, default=str))
+    print("Analysis Results Summary:")
+    print(json.dumps(results['analysis_summary'], indent=2))
+    
+    print(f"\nTop 5 Similar Compounds:")
+    for i, sim in enumerate(results['all_similarities'][:5]):
+        print(f"{i+1}. {sim.get('chemical_name', 'Unknown')} "
+              f"(Similarity: {sim.get('similarity', sim.get('tanimoto_similarity', 0)):.3f})")
 
 if __name__ == "__main__":
-    asyncio.run(example_usage())
+    asyncio.run(example_comprehensive_analysis())

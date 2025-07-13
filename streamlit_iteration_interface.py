@@ -3,7 +3,7 @@ Streamlit Integration for Autonomous Iterator
 @author AI Assistant
 
 Easy-to-use Streamlit interface for the autonomous iteration system.
-Add this to your main Streamlit app or use as a standalone page.
+Now connected to the comprehensive heteroatom database.
 """
 
 import streamlit as st
@@ -13,6 +13,10 @@ from datetime import datetime
 import plotly.graph_objects as go
 import json
 from pathlib import Path
+import sys
+
+# Add backend to path
+sys.path.append(str(Path(__file__).parent / "backend"))
 
 from backend.autonomous_iterator import (
     AutonomousIterator, IterationConfig, IterationMode, IterationState,
@@ -20,6 +24,10 @@ from backend.autonomous_iterator import (
 )
 from backend.agentic_layer import TrackMyPDBAgenticInterface
 from backend.gemini_agent import GeminiAgent
+from backend.comprehensive_database_loader import (
+    ComprehensiveHeteroatomDatabase, get_comprehensive_database,
+    load_heteroatom_data_for_ai, search_heteroatoms, get_random_heteroatoms
+)
 
 def render_autonomous_iteration_page():
     """Render the autonomous iteration interface page"""
@@ -32,12 +40,18 @@ def render_autonomous_iteration_page():
     
     st.title("🔄 Autonomous Molecular Analysis Iterator")
     st.markdown("*Continuously analyze batches of heteroatom data with AI guidance and intelligent stopping conditions*")
+    st.markdown("**Now connected to your comprehensive heteroatom database with 90+ CSV files!**")
     
     # Initialize session state
     if "iteration_running" not in st.session_state:
         st.session_state["iteration_running"] = False
     if "iteration_paused" not in st.session_state:
         st.session_state["iteration_paused"] = False
+    if "database_loaded" not in st.session_state:
+        st.session_state["database_loaded"] = False
+    
+    # Initialize database
+    initialize_comprehensive_database()
     
     # Main interface
     render_iteration_configuration()
@@ -50,6 +64,44 @@ def render_autonomous_iteration_page():
     
     if "iteration_results" in st.session_state:
         render_iteration_results()
+
+def initialize_comprehensive_database():
+    """Initialize and load the comprehensive database"""
+    
+    if not st.session_state.get("database_loaded", False):
+        with st.spinner("🗃️ Loading comprehensive heteroatom database..."):
+            try:
+                # Get database instance
+                db = get_comprehensive_database()
+                
+                # Load database (will use cache if available)
+                df = db.load_comprehensive_database()
+                
+                if not df.empty:
+                    # Get database statistics
+                    summary = db.get_database_summary()
+                    
+                    # Store in session state
+                    st.session_state["comprehensive_database"] = db
+                    st.session_state["database_summary"] = summary
+                    st.session_state["database_loaded"] = True
+                    
+                    # Show success message
+                    overview = summary['database_overview']
+                    st.success(f"""
+                    ✅ **Comprehensive Database Loaded Successfully!**
+                    - **{overview['total_compounds']:,}** total compounds
+                    - **{overview['total_pdb_structures']:,}** PDB structures
+                    - **{overview['compounds_with_smiles']:,}** compounds with SMILES ({overview['smiles_coverage_percentage']:.1f}% coverage)
+                    - **{overview['unique_heteroatom_types']:,}** unique heteroatom types
+                    """)
+                    
+                else:
+                    st.error("❌ Failed to load database - no data found")
+                    
+            except Exception as e:
+                st.error(f"❌ Error loading comprehensive database: {e}")
+                st.info("💡 Falling back to sample data mode")
 
 def render_iteration_configuration():
     """Render iteration configuration section"""
@@ -94,59 +146,71 @@ def render_iteration_configuration():
             )
         
         with col2:
-            st.subheader("Quality Control")
+            st.subheader("Similarity Thresholds")
             
             min_similarity_threshold = st.slider(
                 "Min Similarity Threshold", 
                 min_value=0.0, 
                 max_value=1.0, 
-                value=0.3,
+                value=0.7,
                 step=0.05,
-                help="Minimum Tanimoto similarity to consider significant"
+                help="Minimum Tanimoto similarity to consider"
             )
             
             convergence_threshold = st.slider(
                 "Convergence Threshold", 
-                min_value=0.5, 
-                max_value=1.0, 
-                value=0.95,
+                min_value=0.01, 
+                max_value=0.2, 
+                value=0.05,
                 step=0.01,
-                help="Quality threshold for convergence detection"
+                help="Quality variance threshold for convergence"
             )
             
             quality_threshold = st.slider(
                 "Quality Threshold", 
-                min_value=0.0, 
+                min_value=0.5, 
                 max_value=1.0, 
                 value=0.8,
                 step=0.05,
-                help="Minimum quality score to maintain"
+                help="Minimum quality score to accept results"
             )
         
         with col3:
-            st.subheader("AI & Performance")
+            st.subheader("Advanced Options")
             
             enable_ai_guidance = st.checkbox(
-                "🤖 Enable AI Guidance", 
+                "Enable AI Guidance", 
                 value=True,
-                help="Use Gemini AI to guide iteration decisions"
+                help="Use AI to guide iteration decisions"
             )
             
             save_progress = st.checkbox(
-                "💾 Save Progress", 
+                "Save Progress", 
                 value=True,
-                help="Save progress to resume interrupted sessions"
+                help="Save intermediate results to disk"
             )
             
             auto_adjust_parameters = st.checkbox(
-                "⚡ Auto-Adjust Parameters", 
-                value=True,
-                help="Automatically optimize parameters based on performance"
+                "Auto-adjust Parameters", 
+                value=False,
+                help="Let AI automatically adjust similarity thresholds"
             )
             
-            if enable_ai_guidance:
-                st.info("🤖 AI will analyze results and recommend continuation")
+            # Database-specific options
+            st.subheader("Database Options")
             
+            use_comprehensive_db = st.checkbox(
+                "Use Comprehensive Database",
+                value=True,
+                help="Use your loaded 83 CSV files for comprehensive analysis"
+            )
+            
+            if use_comprehensive_db and st.session_state.get("database_loaded", False):
+                db_summary = st.session_state.get("database_summary", {})
+                if db_summary:
+                    overview = db_summary.get('database_overview', {})
+                    st.info(f"📊 **Database Ready**: {overview.get('total_compounds', 0):,} compounds from {overview.get('total_pdb_structures', 0):,} PDB structures")
+        
         # Store configuration in session state
         st.session_state["iteration_config"] = {
             'mode': iteration_mode,
@@ -158,7 +222,8 @@ def render_iteration_configuration():
             'quality_threshold': quality_threshold,
             'enable_ai_guidance': enable_ai_guidance,
             'save_progress': save_progress,
-            'auto_adjust_parameters': auto_adjust_parameters
+            'auto_adjust_parameters': auto_adjust_parameters,
+            'use_comprehensive_db': use_comprehensive_db
         }
 
 def render_data_source_selection():
